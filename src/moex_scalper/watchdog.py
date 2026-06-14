@@ -44,6 +44,7 @@ def run_watchdog(
         if state_started_at is not None
         else None
     )
+    market_data_required_now = _market_data_required_now(now, config)
     market_data_payload = (state_payload or {}).get("market_data") or {}
     market_data_updated_at = _parse_dt(market_data_payload.get("last_received_at"))
     market_data_age_seconds = (
@@ -60,11 +61,11 @@ def run_watchdog(
         restart_reasons.append("dashboard_state_missing_updated_at")
     elif state_age_seconds > max_state_age_seconds:
         restart_reasons.append("dashboard_state_stale")
-    elif market_data_updated_at is None:
+    elif market_data_required_now and market_data_updated_at is None:
         if state_uptime_seconds is not None and state_uptime_seconds > market_data_warmup_seconds:
             restart_reasons.append("market_data_missing")
             market_data_error = "missing"
-    elif market_data_age_seconds > max_market_data_age_seconds:
+    elif market_data_required_now and market_data_age_seconds > max_market_data_age_seconds:
         restart_reasons.append("market_data_stale")
         market_data_error = "stale"
 
@@ -115,6 +116,7 @@ def run_watchdog(
                 "error": state_error,
             },
             "market_data": {
+                "required_now": market_data_required_now,
                 "last_received_at": market_data_updated_at.isoformat() if market_data_updated_at else None,
                 "age_seconds": market_data_age_seconds,
                 "max_age_seconds": max_market_data_age_seconds,
@@ -188,6 +190,14 @@ def _check_http_health(url: str, *, timeout_seconds: float) -> tuple[bool, str |
 def _dashboard_port() -> int:
     raw = _env_value("SCALPER_DASHBOARD_PORT", "8080") or "8080"
     return int(raw)
+
+
+def _market_data_required_now(now: datetime, config: ScalperConfig) -> bool:
+    local_now = now.astimezone(config.timezone)
+    if local_now.weekday() not in config.entry_weekdays:
+        return False
+    local_time = local_now.time().replace(tzinfo=None)
+    return config.entry_start_time <= local_time <= config.entry_end_time
 
 
 def _env_value(key: str, default: str | None = None) -> str | None:

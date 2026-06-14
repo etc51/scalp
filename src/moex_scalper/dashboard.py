@@ -448,6 +448,7 @@ HTML = """<!doctype html>
           ["Uptime", stateCheck.uptime_seconds === null || stateCheck.uptime_seconds === undefined ? "—" : fmtNum(stateCheck.uptime_seconds, 1) + " s"],
           ["State Age", stateCheck.age_seconds === null || stateCheck.age_seconds === undefined ? "—" : fmtNum(stateCheck.age_seconds, 1) + " s"],
           ["Max State Age", stateCheck.max_age_seconds === null || stateCheck.max_age_seconds === undefined ? "—" : fmtNum(stateCheck.max_age_seconds, 0) + " s"],
+          ["Market Data Required", marketCheck.required_now === undefined ? "—" : String(marketCheck.required_now)],
           ["Last Market Data", marketCheck.last_received_at || "—"],
           ["Market Data Age", marketCheck.age_seconds === null || marketCheck.age_seconds === undefined ? "—" : fmtNum(marketCheck.age_seconds, 1) + " s"],
           ["Max Market Age", marketCheck.max_age_seconds === null || marketCheck.max_age_seconds === undefined ? "—" : fmtNum(marketCheck.max_age_seconds, 0) + " s"],
