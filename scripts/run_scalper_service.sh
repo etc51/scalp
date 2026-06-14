@@ -15,9 +15,23 @@ if [[ ! -x .venv/bin/python3 ]]; then
   exit 1
 fi
 
-set -a
-source .env
-set +a
+while IFS= read -r RAW_LINE || [[ -n "$RAW_LINE" ]]; do
+  LINE="${RAW_LINE%$'\r'}"
+  if [[ -z "$LINE" || "$LINE" == \#* || "$LINE" != *=* ]]; then
+    continue
+  fi
+
+  KEY="${LINE%%=*}"
+  VALUE="${LINE#*=}"
+
+  if [[ "$VALUE" == \"*\" && "$VALUE" == *\" ]]; then
+    VALUE="${VALUE:1:-1}"
+  elif [[ "$VALUE" == \'*\' && "$VALUE" == *\' ]]; then
+    VALUE="${VALUE:1:-1}"
+  fi
+
+  export "$KEY=$VALUE"
+done < .env
 
 if [[ -z "${GRPC_DEFAULT_SSL_ROOTS_FILE_PATH:-}" ]]; then
   CERT_PATH="$(
