@@ -33,13 +33,31 @@ def optimize_parameters(
         input_path=input_path,
         days=days,
     )
-    snapshots = load_snapshots_from_paths(snapshot_files)
-    if not snapshots:
+    raw_snapshots = load_snapshots_from_paths(snapshot_files)
+    if not raw_snapshots:
         payload = {
             "status": "no_data",
             "snapshot_files": [str(path) for path in snapshot_files],
             "snapshot_count": 0,
             "message": "No recorded market snapshots found for analysis.",
+        }
+        maybe_write_report(
+            config.runtime_dir,
+            payload,
+            report_key=build_report_key(config, date_key=date_key, days=days),
+            enabled=write_report,
+        )
+        return payload
+    snapshots, entry_window_summary = filter_snapshots_for_entry_window(config, raw_snapshots)
+    if not snapshots:
+        payload = {
+            "status": "no_entry_window_data",
+            "generated_at": datetime.utcnow().isoformat() + "Z",
+            "snapshot_files": [str(path) for path in snapshot_files],
+            "raw_snapshot_count": len(raw_snapshots),
+            "snapshot_count": 0,
+            "entry_window_summary": entry_window_summary,
+            "message": "Recorded snapshots exist, but none fall inside the configured entry window.",
         }
         maybe_write_report(
             config.runtime_dir,
@@ -72,7 +90,9 @@ def optimize_parameters(
         "status": "ok",
         "generated_at": datetime.utcnow().isoformat() + "Z",
         "snapshot_files": [str(path) for path in snapshot_files],
+        "raw_snapshot_count": len(raw_snapshots),
         "snapshot_count": len(snapshots),
+        "entry_window_summary": entry_window_summary,
         "candidate_count": len(results),
         "top": top_results,
         "baseline": baseline,
@@ -125,6 +145,52 @@ def resolve_date_key(config: ScalperConfig, explicit: str | None) -> str:
     if explicit:
         return explicit
     return datetime.now(config.timezone).date().isoformat()
+
+
+def filter_snapshots_for_entry_window(
+    config: ScalperConfig,
+    snapshots: list[MarketSnapshot],
+) -> tuple[list[MarketSnapshot], dict[str, Any]]:
+    included: list[MarketSnapshot] = []
+    excluded_reasons: Counter[str] = Counter()
+    included_dates: set[str] = set()
+    excluded_dates: set[str] = set()
+
+    for snapshot in snapshots:
+        allowed, reason = snapshot_in_entry_window(config, snapshot.at)
+        local_date = snapshot.at.astimezone(config.timezone).date().isoformat()
+        if allowed:
+            included.append(snapshot)
+            included_dates.add(local_date)
+        else:
+            excluded_reasons[reason] += 1
+            excluded_dates.add(local_date)
+
+    summary = {
+        "timezone": config.timezone_name,
+        "weekdays": list(config.entry_weekdays),
+        "start": config.entry_start_time.isoformat(timespec="minutes"),
+        "end": config.entry_end_time.isoformat(timespec="minutes"),
+        "raw_snapshot_count": len(snapshots),
+        "included_snapshot_count": len(included),
+        "excluded_snapshot_count": len(snapshots) - len(included),
+        "included_dates": sorted(included_dates),
+        "excluded_dates": sorted(excluded_dates),
+        "excluded_reasons": dict(excluded_reasons),
+    }
+    return included, summary
+
+
+def snapshot_in_entry_window(config: ScalperConfig, moment: datetime) -> tuple[bool, str]:
+    local_now = moment.astimezone(config.timezone)
+    if local_now.weekday() not in config.entry_weekdays:
+        return False, "entry_weekday_closed"
+    current_time = local_now.time().replace(tzinfo=None)
+    if current_time < config.entry_start_time:
+        return False, "entry_before_window"
+    if current_time > config.entry_end_time:
+        return False, "entry_after_window"
+    return True, "ok"
 
 
 def build_candidate_configs(base: ScalperConfig) -> list[ScalperConfig]:

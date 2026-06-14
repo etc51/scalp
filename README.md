@@ -291,10 +291,13 @@ python3 -m moex_scalper optimize --days 5 --write-report
 
 - загружает накопленные market snapshots за день
 - может смотреть rolling history по нескольким торговым дням
+- отбрасывает snapshots вне разрешенного entry-window стратегии, чтобы weekend/off-hours не искажали оптимизацию
 - прогоняет набор candidate-конфигураций стратегии
 - сравнивает их по `score`, `equity_delta_rub`, `max_drawdown_rub`, `profit_factor`, `trade_count`
 - пишет отчет в `runtime/optimizer/latest.json`
 - добавляет `recommendation`, если найден конфиг, который достаточно лучше baseline
+
+Если в выбранных файлах есть snapshots, но ни один не попал в торговое окно новых входов, optimizer вернет `status=no_entry_window_data` вместо ложного вывода по пустому sample.
 
 На сервере это можно запускать и вручную, и автоматически:
 

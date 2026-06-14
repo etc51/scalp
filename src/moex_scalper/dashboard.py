@@ -495,9 +495,10 @@ HTML = """<!doctype html>
         const state = await response.json();
         const todayStats = state.stats?.today || null;
         const overallStats = state.stats?.overall || null;
-        const optimizerTop = state.optimizer?.top?.[0] || null;
-        const optimizerBaseline = state.optimizer?.baseline || null;
-        const optimizerRecommendation = state.optimizer?.recommendation || null;
+        const optimizer = state.optimizer || null;
+        const optimizerTop = optimizer?.top?.[0] || null;
+        const optimizerBaseline = optimizer?.baseline || null;
+        const optimizerRecommendation = optimizer?.recommendation || null;
         const watchdog = state.watchdog || null;
         const tuning = state.tuning || null;
         const restrictions = state.restrictions || null;
@@ -568,8 +569,21 @@ HTML = """<!doctype html>
 
         document.getElementById("todaySummaryWrap").innerHTML = renderSummary(todayStats);
         document.getElementById("overallSummaryWrap").innerHTML = renderSummary(overallStats);
-        const recommendationLine = optimizerRecommendation
-          ? `<div class="empty">eligible: ${optimizerRecommendation.eligible} | reason: ${optimizerRecommendation.reason}${optimizerRecommendation.delta_vs_baseline_rub ? ` | delta vs baseline: ${fmtRub(optimizerRecommendation.delta_vs_baseline_rub)}` : ""}</div>`
+        const optimizerInfoParts = [];
+        if (optimizer?.status) optimizerInfoParts.push(`status: ${optimizer.status}`);
+        if (optimizer?.snapshot_count !== undefined) optimizerInfoParts.push(`in-window snapshots: ${fmtNum(optimizer.snapshot_count, 0)}`);
+        if (optimizer?.raw_snapshot_count !== undefined) optimizerInfoParts.push(`raw snapshots: ${fmtNum(optimizer.raw_snapshot_count, 0)}`);
+        if (optimizerRecommendation) optimizerInfoParts.push(`eligible: ${optimizerRecommendation.eligible}`);
+        if (optimizerRecommendation?.reason) optimizerInfoParts.push(`reason: ${optimizerRecommendation.reason}`);
+        if (optimizerRecommendation?.delta_vs_baseline_rub) optimizerInfoParts.push(`delta vs baseline: ${fmtRub(optimizerRecommendation.delta_vs_baseline_rub)}`);
+        if (optimizer?.entry_window_summary?.excluded_reasons) {
+          const excluded = Object.entries(optimizer.entry_window_summary.excluded_reasons)
+            .map(([reason, count]) => `${reason}=${count}`)
+            .join(", ");
+          if (excluded) optimizerInfoParts.push(`excluded: ${excluded}`);
+        }
+        const recommendationLine = optimizerInfoParts.length
+          ? `<div class="empty">${optimizerInfoParts.join(" | ")}</div>`
           : "";
         document.getElementById("optimizerTopWrap").innerHTML = recommendationLine + renderOptimizer(optimizerTop);
         document.getElementById("optimizerBaselineWrap").innerHTML = renderOptimizer(optimizerBaseline);
