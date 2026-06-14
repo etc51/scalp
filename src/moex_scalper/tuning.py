@@ -21,6 +21,7 @@ PARAMETER_ENV_MAP: dict[str, str] = {
     "min_net_take_profit_bps": "SCALPER_MIN_NET_TAKE_PROFIT_BPS",
     "cooldown_seconds": "SCALPER_COOLDOWN_SECONDS",
 }
+REGIME_FILTER_ENV_KEY = "SCALPER_REGIME_FILTER_MODE"
 
 
 def tune_parameters(
@@ -33,10 +34,12 @@ def tune_parameters(
     env_file = Path(env_path)
     analysis_path = config.runtime_dir / "analysis" / "latest.json"
     optimizer_path = config.runtime_dir / "optimizer" / "latest.json"
+    research_path = config.runtime_dir / "research" / "latest.json"
     session_path = config.runtime_dir / "paper_session.json"
 
     analysis_payload = _load_json(analysis_path)
     optimizer_payload = _load_json(optimizer_path)
+    research_payload = _load_json(research_path)
     session_payload = _load_json(session_path)
     strategy_diagnostics = build_strategy_diagnostics(config)
 
@@ -69,13 +72,18 @@ def tune_parameters(
         if headroom_candidate_parameters
         else None
     )
+    research_recommendation = dict((((research_payload or {}).get("regime_replay") or {}).get("recommendation") or {}))
+    research_candidate = dict(research_recommendation.get("candidate") or {})
 
     enabled = parse_bool(_env_value("SCALPER_AUTO_TUNE_ENABLED"), default=True)
+    regime_apply_enabled = parse_bool(_env_value("SCALPER_AUTO_APPLY_REGIME_FILTER", "1"), default=True)
     min_trades = int(_env_value("SCALPER_AUTO_TUNE_MIN_TRADES", "8"))
     min_delta_rub = Decimal(_env_value("SCALPER_AUTO_TUNE_MIN_DELTA_RUB", "0"))
+    min_regime_delta_rub = Decimal(_env_value("SCALPER_AUTO_TUNE_MIN_REGIME_DELTA_RUB", "0"))
     open_positions = len(list((session_payload or {}).get("positions", [])))
     analysis_trade_count = int(((analysis_payload or {}).get("summary") or {}).get("trade_count", 0))
     delta_vs_baseline_rub = Decimal(str(recommendation.get("delta_vs_baseline_rub", "0")))
+    regime_delta_vs_baseline_rub = Decimal(str(research_candidate.get("delta_vs_baseline_rub", "0")))
 
     common_reasons: list[str] = []
     if config.mode != "paper":
@@ -118,27 +126,56 @@ def tune_parameters(
         selected_candidate_parameters = headroom_candidate_parameters
         candidate_source = "headroom_guard"
 
-    candidate_signature = (
-        parameter_signature(selected_candidate_parameters)
-        if selected_candidate_parameters
-        else None
-    )
+    regime_reasons: list[str] = []
+    selected_regime_filter_mode: str | None = None
+    if not regime_apply_enabled:
+        regime_reasons.append("regime_autotune_disabled")
+    if research_payload is None:
+        regime_reasons.append("missing_research_report")
+    elif research_payload.get("status") != "ok":
+        regime_reasons.append(f"research_{research_payload.get('status', 'unknown')}")
+    elif not research_recommendation.get("eligible", False):
+        regime_reasons.append(f"research_{research_recommendation.get('reason', 'not_eligible')}")
+    regime_candidate_mode = str(research_candidate.get("mode") or "").strip()
+    if not regime_reasons:
+        if not regime_candidate_mode:
+            regime_reasons.append("missing_regime_candidate_mode")
+        elif regime_candidate_mode == config.regime_filter_mode:
+            regime_reasons.append("regime_filter_already_applied")
+        elif regime_delta_vs_baseline_rub < min_regime_delta_rub:
+            regime_reasons.append("regime_delta_below_threshold")
+        else:
+            selected_regime_filter_mode = regime_candidate_mode
+
+    env_updates: dict[str, str] = {}
+    candidate_sources: list[str] = []
+    candidate_signature = None
+    if selected_candidate_parameters is not None:
+        env_updates.update(parameter_env_updates(selected_candidate_parameters))
+        candidate_sources.append(candidate_source or "parameter_candidate")
+        candidate_signature = parameter_signature(selected_candidate_parameters)
+    if selected_regime_filter_mode is not None:
+        env_updates[REGIME_FILTER_ENV_KEY] = selected_regime_filter_mode
+        candidate_sources.append("research_regime")
+
     reasons = list(common_reasons)
-    if selected_candidate_parameters is None:
+    if not env_updates:
         reasons.extend(optimizer_reasons)
-    elif candidate_signature == current_signature:
+        reasons.extend(regime_reasons)
+
+    changed_keys = changed_env_keys(config, env_updates)
+    if env_updates and not changed_keys:
         reasons.append("candidate_already_applied")
 
     applied = apply and not reasons
-    changed_keys = (
-        changed_parameter_keys(current_parameters, selected_candidate_parameters)
-        if selected_candidate_parameters
-        else []
-    )
     updated_parameters = dict(current_parameters)
+    updated_regime_filter_mode = config.regime_filter_mode
     if applied:
-        updated_parameters = normalize_parameters(selected_candidate_parameters)
-        update_env_file(env_file, parameter_env_updates(updated_parameters))
+        if selected_candidate_parameters is not None:
+            updated_parameters = normalize_parameters(selected_candidate_parameters)
+        if selected_regime_filter_mode is not None:
+            updated_regime_filter_mode = selected_regime_filter_mode
+        update_env_file(env_file, env_updates)
 
     payload = {
         "status": "ok",
@@ -153,11 +190,15 @@ def tune_parameters(
         "open_positions": open_positions,
         "current_signature": current_signature,
         "candidate_signature": candidate_signature,
-        "candidate_source": candidate_source,
+        "candidate_source": "+".join(candidate_sources) if candidate_sources else None,
+        "candidate_env_updates": env_updates or None,
         "current_parameters": current_parameters,
         "candidate_parameters": normalize_parameters(selected_candidate_parameters) if selected_candidate_parameters else None,
         "parameters_after": updated_parameters,
         "changed_keys": changed_keys,
+        "current_regime_filter_mode": config.regime_filter_mode,
+        "candidate_regime_filter_mode": selected_regime_filter_mode,
+        "regime_filter_mode_after": updated_regime_filter_mode,
         "strategy_diagnostics": strategy_diagnostics,
         "headroom_guard": {
             "needed": not bool(strategy_diagnostics.get("target_headroom_met", True)),
@@ -185,6 +226,16 @@ def tune_parameters(
             "candidate_source": optimizer_candidate_source if optimizer_candidate_parameters else None,
             "headroom_adjusted": optimizer_headroom_adjusted,
             "candidate_signature": optimizer_candidate_signature,
+        },
+        "research": {
+            "status": (research_payload or {}).get("status"),
+            "recommendation_reason": research_recommendation.get("reason"),
+            "eligible": research_recommendation.get("eligible", False),
+            "candidate_name": research_candidate.get("name"),
+            "candidate_mode": regime_candidate_mode or None,
+            "candidate_trade_count": research_candidate.get("trade_count"),
+            "delta_vs_baseline_rub": str(regime_delta_vs_baseline_rub),
+            "apply_enabled": regime_apply_enabled,
         },
         "next_action": build_next_action(apply=apply, applied=applied, reasons=reasons),
         "service_restart_required": applied,
@@ -240,6 +291,23 @@ def parameter_env_updates(parameters: dict[str, Any]) -> dict[str, str]:
         for param_key, env_key in PARAMETER_ENV_MAP.items()
         if param_key in normalized
     }
+
+
+def changed_env_keys(config: ScalperConfig, env_updates: dict[str, str]) -> list[str]:
+    current_values = current_env_values(config)
+    reverse_map = {env_key: key for key, env_key in PARAMETER_ENV_MAP.items()}
+    changed: list[str] = []
+    for env_key, value in env_updates.items():
+        if current_values.get(env_key) == value:
+            continue
+        changed.append(reverse_map.get(env_key, env_key.lower().removeprefix("scalper_")))
+    return changed
+
+
+def current_env_values(config: ScalperConfig) -> dict[str, str]:
+    current = parameter_env_updates(current_strategy_parameters(config))
+    current[REGIME_FILTER_ENV_KEY] = config.regime_filter_mode
+    return current
 
 
 def build_headroom_guard_candidate(
@@ -319,6 +387,8 @@ def build_next_action(*, apply: bool, applied: bool, reasons: list[str]) -> str:
         return "restart_paper_service"
     if "insufficient_trade_sample" in reasons:
         return "collect_more_paper_trades"
+    if any(reason.startswith("research_") for reason in reasons):
+        return "wait_for_better_regime_candidate"
     if any(reason.startswith("optimizer_") for reason in reasons):
         return "wait_for_better_optimizer_candidate"
     if "open_positions_present" in reasons:

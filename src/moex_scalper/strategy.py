@@ -8,16 +8,15 @@ from decimal import Decimal
 from .commission import CommissionModel
 from .config import ScalperConfig
 from .domain import EntrySignal, ExitDecision, MarketSnapshot, Position, Side
+from .indicators import compute_indicator_state
 
 
 @dataclass(slots=True)
 class InstrumentMomentumState:
     history: deque[tuple[object, Decimal]] = field(default_factory=deque)
     current_minute_at: object | None = None
-    current_minute_open: Decimal | None = None
     current_minute_close: Decimal | None = None
-    previous_minute_open: Decimal | None = None
-    previous_minute_close: Decimal | None = None
+    completed_minute_closes: deque[Decimal] = field(default_factory=lambda: deque(maxlen=64))
 
 
 class ModerateScalpingStrategy:
@@ -127,7 +126,6 @@ class ModerateScalpingStrategy:
         mid_price = snapshot.mid_price
         if state.current_minute_at is None:
             state.current_minute_at = local_minute
-            state.current_minute_open = mid_price
             state.current_minute_close = mid_price
             return
 
@@ -135,10 +133,9 @@ class ModerateScalpingStrategy:
             state.current_minute_close = mid_price
             return
 
-        state.previous_minute_open = state.current_minute_open
-        state.previous_minute_close = state.current_minute_close
+        if state.current_minute_close is not None:
+            state.completed_minute_closes.append(state.current_minute_close)
         state.current_minute_at = local_minute
-        state.current_minute_open = mid_price
         state.current_minute_close = mid_price
 
     def _check_regime_filter(
@@ -152,24 +149,41 @@ class ModerateScalpingStrategy:
         if mode == "off":
             return True, "ok", metrics
 
-        previous_open = state.previous_minute_open
-        previous_close = state.previous_minute_close
-        if previous_open is None or previous_close is None or previous_open <= 0:
+        indicator_state = compute_indicator_state(list(state.completed_minute_closes))
+        trend_label = indicator_state.get("trend_label")
+        rsi14 = indicator_state.get("rsi14")
+        macd_hist = indicator_state.get("macd_hist")
+        ema_gap_bps = indicator_state.get("ema_gap_bps")
+        if trend_label is None and rsi14 is None and macd_hist is None:
             return False, "regime_prev_minute_warmup", metrics
 
-        previous_return_bps = ((previous_close - previous_open) / previous_open) * Decimal("10000")
-        metrics["prev_minute_open"] = previous_open
-        metrics["prev_minute_close"] = previous_close
-        metrics["prev_minute_return_bps"] = previous_return_bps
+        metrics.update(
+            {
+                "regime_trend_label": trend_label or "neutral",
+                "regime_rsi14": rsi14,
+                "regime_macd_hist": macd_hist,
+                "regime_ema_gap_bps": ema_gap_bps,
+            }
+        )
 
         if mode == "trend_not_bearish":
-            if previous_close < previous_open:
+            if trend_label == "bearish":
                 return False, "regime_prev_minute_bearish", metrics
             return True, "ok", metrics
 
         if mode == "trend_bullish":
-            if previous_close <= previous_open:
+            if trend_label != "bullish":
                 return False, "regime_prev_minute_not_bullish", metrics
+            return True, "ok", metrics
+
+        if mode == "macd_positive":
+            if macd_hist is None or macd_hist <= 0:
+                return False, "regime_prev_minute_macd_non_positive", metrics
+            return True, "ok", metrics
+
+        if mode == "rsi_50_70":
+            if rsi14 is None or rsi14 < Decimal("50") or rsi14 > Decimal("70"):
+                return False, "regime_prev_minute_rsi_out_of_band", metrics
             return True, "ok", metrics
 
         return True, "ok", metrics

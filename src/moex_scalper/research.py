@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import ScalperConfig
+from .indicators import classify_trend
 from .market_history import load_snapshots_from_paths
 from .optimizer import filter_snapshots_for_entry_window, resolve_snapshot_files, simulate_candidate
 
@@ -504,6 +505,7 @@ def summarize_regime_candidate(candidate: dict[str, str], raw: dict[str, Any]) -
     return {
         "name": candidate["name"],
         "description": candidate["description"],
+        "mode": candidate["mode"],
         "trade_count": int(raw.get("trade_count", 0)),
         "wins": int(raw.get("wins", 0)),
         "losses": int(raw.get("losses", 0)),
@@ -547,17 +549,6 @@ def build_regime_recommendation(
     if delta <= 0:
         return {"eligible": False, "reason": "no_positive_delta_vs_baseline", "candidate": top}
     return {"eligible": True, "reason": "best_positive_regime_filter", "candidate": top}
-
-
-def classify_trend(*, rsi14: float | None, ema_gap_bps: float | None, macd_hist: float | None) -> str:
-    if rsi14 is None or ema_gap_bps is None or macd_hist is None:
-        return "neutral"
-    if rsi14 >= 55 and ema_gap_bps > 0 and macd_hist > 0:
-        return "bullish"
-    if rsi14 <= 45 and ema_gap_bps < 0 and macd_hist < 0:
-        return "bearish"
-    return "neutral"
-
 
 def maybe_write_report(runtime_dir: Path, payload: dict[str, Any], *, enabled: bool) -> None:
     if not enabled:

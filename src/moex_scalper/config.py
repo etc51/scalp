@@ -96,6 +96,8 @@ def parse_regime_filter_mode(value: str | None, default: str = "off") -> str:
         "off",
         "trend_not_bearish",
         "trend_bullish",
+        "macd_positive",
+        "rsi_50_70",
     }
     if candidate not in allowed:
         raise SystemExit(

@@ -167,7 +167,7 @@ python3 -m tbank_latency_check --iterations 5 --stream-iterations 2 --write-repo
 - учет комиссии Premium для акций Мосбиржи по умолчанию как `0.04%` на сторону (`4.0 bps`)
 - фильтр по спреду, дисбалансу стакана, короткому импульсу, минимальному net take-profit после комиссии и `time-stop`
 - отдельный target-buffer по чистой цели после комиссии через `SCALPER_TARGET_NET_TAKE_PROFIT_BUFFER_BPS`, чтобы autotune не оставлял стратегию без запаса на издержки
-- опциональный minute-regime filter через `SCALPER_REGIME_FILTER_MODE` для новых входов: `off`, `trend_not_bearish`, `trend_bullish`
+- опциональный minute-regime filter через `SCALPER_REGIME_FILTER_MODE` для новых входов: `off`, `trend_not_bearish`, `trend_bullish`, `macd_positive`, `rsi_50_70`
 - paper-контур умеет считать gross leverage и buying power через `SCALPER_PAPER_MAX_GROSS_LEVERAGE`
 - дневной лимит убытка и cooldown
 - watchdog и dashboard теперь отдельно подсвечивают конфиг, который сам по себе блокирует новые входы
@@ -196,10 +196,12 @@ python3 -m moex_scalper run --mode live
 - short по акциям по умолчанию выключен
 - `SCALPER_MIN_NET_TAKE_PROFIT_BPS` задает минимальную чистую цель в `bps` после roundtrip-комиссии Premium; это режет слишком тесные сделки даже если импульс формально проходит
 - `SCALPER_TARGET_NET_TAKE_PROFIT_BUFFER_BPS` задает желаемый запас сверх этого floor; `doctor`, `summary`, `dashboard` и autotune показывают и используют рекомендуемый минимальный `take-profit`
-- `SCALPER_REGIME_FILTER_MODE` влияет только на новые входы и использует предыдущую 1m-свечу инструмента:
+- `SCALPER_REGIME_FILTER_MODE` влияет только на новые входы и использует только уже закрытую предыдущую 1m-минуту инструмента:
   - `off` — без regime-filter
-  - `trend_not_bearish` — не входить после bearish предыдущей минуты
-  - `trend_bullish` — входить только после bullish предыдущей минуты
+  - `trend_not_bearish` — не входить, если предыдущая закрытая минута выглядит bearish по RSI/EMA/MACD regime
+  - `trend_bullish` — входить только если предыдущая закрытая минута выглядит bullish по RSI/EMA/MACD regime
+  - `macd_positive` — входить только если у предыдущей закрытой минуты `MACD histogram > 0`
+  - `rsi_50_70` — входить только если у предыдущей закрытой минуты `RSI14` в диапазоне `50-70`
 - это рабочий paper-контур для накопления статистики и data-driven тюнинга
 
 ## GitHub Auto-Update On Server
@@ -411,14 +413,21 @@ python3 -m moex_scalper tune --apply --write-report
 Что делает:
 
 - читает `runtime/analysis/latest.json` и `runtime/optimizer/latest.json`
+- читает `runtime/research/latest.json` и может отдельно применить лучший regime-filter из regime-replay
 - проверяет, что мы все еще в `paper`-режиме
 - не меняет параметры, если идет торговое окно новых входов
 - не меняет параметры, если в `paper_session.json` есть открытые позиции
 - требует достаточный sample по сделкам
 - если candidate из optimizer реально пригоден, обновляет параметры стратегии в `.env`
 - если optimizer пока не готов, но у текущего конфига слишком маленький запас после комиссии, может все равно безопасно поднять `take-profit` до рекомендованного минимума
+- если research показывает устойчиво лучший regime-filter против baseline, autotune может сам включить его в `.env` через `SCALPER_REGIME_FILTER_MODE`
 - пишет решение в `runtime/tuning/latest.json` и историю в `runtime/tuning/history.jsonl`
 - после успешного apply перезапускает только `paper`-сервис бота
+
+Для regime-autotune есть отдельные флаги:
+
+- `SCALPER_AUTO_APPLY_REGIME_FILTER=1` — разрешает auto-apply research regime candidate
+- `SCALPER_AUTO_TUNE_MIN_REGIME_DELTA_RUB=0` — минимальный `delta_vs_baseline_rub`, чтобы regime-filter считался достойным apply
 
 На сервере это можно запускать и вручную, и автоматически:
 
