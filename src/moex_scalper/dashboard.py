@@ -247,7 +247,7 @@ HTML = """<!doctype html>
 
     <div class="layout">
       <div class="panel">
-        <h2>Watchdog</h2>
+        <h2>Readiness & Watchdog</h2>
         <div id="watchdogWrap"></div>
       </div>
       <div class="panel">
@@ -435,20 +435,30 @@ HTML = """<!doctype html>
       return ticker + `<div class="stack-gap"></div>` + hour;
     };
 
-    const renderWatchdog = (watchdog) => {
-      if (!watchdog) return '<div class="empty">Пока нет watchdog-report</div>';
+    const renderWatchdog = (watchdog, doctor) => {
+      if (!watchdog && !doctor) return '<div class="empty">Пока нет readiness-report</div>';
       const stateCheck = watchdog.checks?.dashboard_state || {};
       const marketCheck = watchdog.checks?.market_data || {};
       const sessionCheck = watchdog.checks?.paper_session || {};
       const httpCheck = watchdog.checks?.dashboard_http || {};
       const strategyCheck = watchdog.checks?.strategy_config || {};
+      const doctorSchedule = doctor?.entry_schedule || {};
+      const doctorApi = doctor?.api || {};
       return renderTable(
         ["Metric", "Value"],
         [
-          ["Status", watchdog.status || "—"],
-          ["Restart Required", String(watchdog.restart_required)],
-          ["Restart Reasons", (watchdog.restart_reasons || []).join(", ") || "—"],
-          ["Warnings", (watchdog.warning_reasons || []).join(", ") || "—"],
+          ["Doctor Status", doctor?.status || "—"],
+          ["Doctor Action", doctor?.next_action || "—"],
+          ["API Reachable", doctorApi.reachable === undefined ? "—" : String(doctorApi.reachable)],
+          ["Resolved Instruments", fmtNum((doctorApi.resolved_instruments || []).length, 0)],
+          ["Window State", doctorSchedule.state || "—"],
+          ["Next Window", doctorSchedule.next_start_at ? `${doctorSchedule.next_start_at} .. ${doctorSchedule.next_end_at || "—"}` : "—"],
+          ["Doctor Warnings", (doctor?.warnings || []).join(", ") || "—"],
+          ["Doctor Errors", (doctor?.errors || []).join(", ") || "—"],
+          ["Status", watchdog?.status || "—"],
+          ["Restart Required", watchdog?.restart_required === undefined ? "—" : String(watchdog.restart_required)],
+          ["Restart Reasons", (watchdog?.restart_reasons || []).join(", ") || "—"],
+          ["Warnings", (watchdog?.warning_reasons || []).join(", ") || "—"],
           ["Uptime", stateCheck.uptime_seconds === null || stateCheck.uptime_seconds === undefined ? "—" : fmtNum(stateCheck.uptime_seconds, 1) + " s"],
           ["State Age", stateCheck.age_seconds === null || stateCheck.age_seconds === undefined ? "—" : fmtNum(stateCheck.age_seconds, 1) + " s"],
           ["Max State Age", stateCheck.max_age_seconds === null || stateCheck.max_age_seconds === undefined ? "—" : fmtNum(stateCheck.max_age_seconds, 0) + " s"],
@@ -462,8 +472,8 @@ HTML = """<!doctype html>
           ["Net TP Buffer", strategyCheck.net_take_profit_buffer_bps ?? "—"],
           ["Strategy Warnings", (strategyCheck.warnings || []).join(", ") || "—"],
           ["Open Positions", fmtNum(sessionCheck.open_positions || 0, 0)],
-          ["Next Action", watchdog.next_action || "—"],
-          ["Updated", watchdog.generated_at || "—"],
+          ["Next Action", watchdog?.next_action || doctor?.next_action || "—"],
+          ["Updated", watchdog?.generated_at || doctor?.generated_at || "—"],
         ],
       );
     };
@@ -704,6 +714,7 @@ HTML = """<!doctype html>
         const optimizerRecommendation = optimizer?.recommendation || null;
         const coverage = optimizer?.signal_coverage || null;
         const watchdog = state.watchdog || null;
+        const doctor = state.doctor || null;
         const tuning = state.tuning || null;
         const restrictions = state.restrictions || null;
         const activeRestrictions = state.active_restrictions || null;
@@ -795,7 +806,7 @@ HTML = """<!doctype html>
         document.getElementById("optimizerBaselineWrap").innerHTML = renderOptimizer(optimizerBaseline);
         document.getElementById("coverageSummaryWrap").innerHTML = renderCoverageSummary(coverage);
         document.getElementById("coverageBreakdownWrap").innerHTML = renderCoverageBreakdown(coverage);
-        document.getElementById("watchdogWrap").innerHTML = renderWatchdog(watchdog);
+        document.getElementById("watchdogWrap").innerHTML = renderWatchdog(watchdog, doctor);
         document.getElementById("strategyWrap").innerHTML = renderStrategy(
           state.strategy_parameters || null,
           state.strategy_diagnostics || null,
@@ -852,10 +863,11 @@ def _default_payload() -> dict[str, object]:
             "overall": None,
         },
         "optimizer": {
-            "top": [],
-            "baseline": None,
+          "top": [],
+          "baseline": None,
         },
         "watchdog": None,
+        "doctor": None,
         "tuning": None,
         "restrictions": None,
         "analysis": None,
@@ -880,6 +892,7 @@ def serve_dashboard(*, host: str, port: int, runtime_dir: Path) -> None:
     state_path = runtime_dir / "dashboard_state.json"
     optimizer_path = runtime_dir / "optimizer" / "latest.json"
     watchdog_path = runtime_dir / "watchdog" / "latest.json"
+    doctor_path = runtime_dir / "doctor" / "latest.json"
     tuning_path = runtime_dir / "tuning" / "latest.json"
     restrictions_path = runtime_dir / "restrictions" / "latest.json"
     analysis_path = runtime_dir / "analysis" / "latest.json"
@@ -915,6 +928,11 @@ def serve_dashboard(*, host: str, port: int, runtime_dir: Path) -> None:
                         payload["watchdog"] = json.loads(watchdog_path.read_text(encoding="utf-8"))
                     except json.JSONDecodeError:
                         payload["watchdog"] = None
+                if doctor_path.exists():
+                    try:
+                        payload["doctor"] = json.loads(doctor_path.read_text(encoding="utf-8"))
+                    except json.JSONDecodeError:
+                        payload["doctor"] = None
                 if tuning_path.exists():
                     try:
                         payload["tuning"] = json.loads(tuning_path.read_text(encoding="utf-8"))

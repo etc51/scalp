@@ -1,0 +1,10 @@
+[Unit]
+Description=Pre-open readiness checks for MOEX paper scalper
+
+[Timer]
+OnCalendar=Mon..Fri 10:05:00
+Persistent=true
+Unit=moex-scalper-preopen.service
+
+[Install]
+WantedBy=timers.target

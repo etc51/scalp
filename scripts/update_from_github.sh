@@ -40,6 +40,9 @@ fi
 if sudo systemctl list-unit-files moex-scalper-watchdog.service >/dev/null 2>&1; then
   sudo systemctl start moex-scalper-watchdog.service || true
 fi
+if sudo systemctl list-unit-files moex-scalper-preopen.service >/dev/null 2>&1; then
+  sudo systemctl start moex-scalper-preopen.service || true
+fi
 if sudo systemctl list-unit-files moex-scalper-summary.service >/dev/null 2>&1; then
   sudo systemctl start moex-scalper-summary.service || true
 fi

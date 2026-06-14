@@ -18,6 +18,7 @@ def build_daily_summary(
     analysis = _load_json(runtime_dir / "analysis" / "latest.json")
     optimizer = _load_json(runtime_dir / "optimizer" / "latest.json")
     research = _load_json(runtime_dir / "research" / "latest.json")
+    doctor = _load_json(runtime_dir / "doctor" / "latest.json")
     tuning = _load_json(runtime_dir / "tuning" / "latest.json")
     restrictions = _load_json(runtime_dir / "restrictions" / "latest.json")
     watchdog = _load_json(runtime_dir / "watchdog" / "latest.json")
@@ -69,6 +70,14 @@ def build_daily_summary(
             "snapshot_count": (research or {}).get("snapshot_count"),
             "focus": list((research or {}).get("focus") or []),
         },
+        "doctor": {
+            "status": (doctor or {}).get("status"),
+            "next_action": (doctor or {}).get("next_action"),
+            "warnings": list((doctor or {}).get("warnings") or []),
+            "errors": list((doctor or {}).get("errors") or []),
+            "entry_schedule": (doctor or {}).get("entry_schedule"),
+            "strategy_diagnostics": (doctor or {}).get("strategy_diagnostics"),
+        },
         "tuning": {
             "decision": (tuning or {}).get("decision"),
             "next_action": (tuning or {}).get("next_action"),
@@ -101,15 +110,20 @@ def build_focus(payload: dict[str, Any]) -> list[str]:
     analysis = payload.get("analysis") or {}
     optimizer = payload.get("optimizer") or {}
     research = payload.get("research") or {}
+    doctor = payload.get("doctor") or {}
     watchdog = payload.get("watchdog") or {}
     strategy_diagnostics = payload.get("strategy_diagnostics") or {}
 
     if watchdog.get("status") not in {None, "healthy"}:
         focus.append(f"Watchdog status: {watchdog.get('status')}.")
+    if doctor.get("status") == "error":
+        focus.append("Doctor не смог подтвердить готовность API или watchlist перед сессией.")
     if not strategy_diagnostics.get("viable_for_entry", True):
         focus.append(
             "Текущий take-profit после комиссии ниже минимального net-floor; новые входы будут блокироваться."
         )
+    elif "net_take_profit_no_headroom" in list(strategy_diagnostics.get("warnings") or []):
+        focus.append("У стратегии нулевой запас по чистой цели после комиссии; входы разрешены, но запас минимален.")
     if int(today.get("trade_count", 0) or 0) <= 0:
         focus.append("Сегодня нет закрытых paper-сделок.")
     if analysis.get("assessment") == "insufficient_sample":
@@ -143,11 +157,14 @@ def build_headline(payload: dict[str, Any]) -> str:
     analysis = payload.get("analysis") or {}
     optimizer = payload.get("optimizer") or {}
     research = payload.get("research") or {}
+    doctor = payload.get("doctor") or {}
     watchdog = payload.get("watchdog") or {}
     strategy_diagnostics = payload.get("strategy_diagnostics") or {}
 
     if watchdog.get("status") not in {None, "healthy"}:
         return f"Watchdog status {watchdog.get('status')}: контур требует внимания."
+    if doctor.get("status") == "error":
+        return "Doctor не подтвердил готовность API или watchlist; перед сессией нужен ручной разбор."
     if not strategy_diagnostics.get("viable_for_entry", True):
         return "Конфиг стратегии блокирует новые входы: нужно поднять take-profit или ослабить net-floor."
     if optimizer.get("status") == "no_entry_window_data" and research.get("status") == "no_entry_window_data":
@@ -165,6 +182,7 @@ def build_next_action(payload: dict[str, Any]) -> str:
     analysis = payload.get("analysis") or {}
     optimizer = payload.get("optimizer") or {}
     research = payload.get("research") or {}
+    doctor = payload.get("doctor") or {}
     tuning = payload.get("tuning") or {}
     restrictions = payload.get("restrictions") or {}
     watchdog = payload.get("watchdog") or {}
@@ -172,8 +190,12 @@ def build_next_action(payload: dict[str, Any]) -> str:
 
     if watchdog.get("restart_required"):
         return "inspect_watchdog_and_runtime"
+    if doctor.get("status") == "error":
+        return "inspect_api_access"
     if not strategy_diagnostics.get("viable_for_entry", True):
         return "raise_take_profit_or_lower_net_floor"
+    if doctor.get("next_action") not in {None, "none", "review_strategy_headroom"}:
+        return str(doctor.get("next_action"))
     if watchdog.get("next_action") not in {None, "none"}:
         return str(watchdog.get("next_action"))
     if optimizer.get("status") == "no_entry_window_data" or research.get("status") == "no_entry_window_data":

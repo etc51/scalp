@@ -204,6 +204,7 @@ python3 -m moex_scalper run --mode live
 - `scripts/update_from_github.sh` делает `git pull`, обновляет зависимости и перезапускает сервис
 - `scripts/install_server_services.sh` ставит `systemd`-юниты
 - `deploy/systemd/moex-scalper-update.timer` запускает ночную проверку обновлений в `03:30` по `Europe/Moscow`
+- `deploy/systemd/moex-scalper-preopen.timer` прогоняет `doctor + watchdog + summary` в `10:05` по будням перед окном новых входов
 
 Базовая схема на сервере:
 
@@ -235,6 +236,7 @@ sudo systemctl status moex-scalper.service
 sudo systemctl restart moex-scalper.service
 sudo systemctl stop moex-scalper.service
 sudo journalctl -u moex-scalper.service -f
+sudo journalctl -u moex-scalper-preopen.service -f
 sudo systemctl status moex-scalper-update.timer
 sudo systemctl start moex-scalper-update.service
 ```
@@ -263,6 +265,7 @@ sudo systemctl start moex-scalper-update.service
 - `stats/overview.json` — накопительная статистика за все время
 - `stats/daily/YYYY-MM-DD.json` — дневная статистика по сделкам
 - `dashboard_state.json` — текущее состояние для внешнего dashboard
+- `doctor/latest.json` — последний session-readiness report по API, watchlist и стратегии перед торговым окном
 - `analysis/latest.json` — nightly trade-analysis по реальным paper-сделкам
 - `research/latest.json` — nightly indicator research по market snapshots внутри торгового окна
 - `summary/latest.json` — nightly daily digest со сводкой состояния paper-контура и next action
@@ -376,7 +379,7 @@ python3 -m moex_scalper summarize --write-report
 
 Что делает:
 
-- собирает `dashboard_state`, `analysis`, `optimizer`, `research`, `tuning`, `restrictions`, `watchdog`
+- собирает `dashboard_state`, `doctor`, `analysis`, `optimizer`, `research`, `tuning`, `restrictions`, `watchdog`
 - формирует единый nightly digest для оператора
 - пишет `headline`, `focus` и `next_action`
 - сохраняет отчет в `runtime/summary/latest.json`
@@ -485,3 +488,27 @@ python3 -m moex_scalper watchdog --write-report
 - по умолчанию таймер срабатывает каждые `5 минут`
 
 Это не меняет торговую логику и не влияет на реальные сделки, потому что проект остается строго в `paper`-режиме.
+
+## Session Readiness
+
+Перед торговым окном теперь есть отдельный readiness-контур.
+
+Команда:
+
+```bash
+python3 -m moex_scalper doctor --mode paper --write-report
+```
+
+Что делает:
+
+- проверяет доступность API и разрешение watchlist-инструментов
+- пишет текущее состояние торгового окна и время следующего окна входов
+- считает strategy diagnostics по комиссии, net take-profit и headroom
+- сохраняет отчет в `runtime/doctor/latest.json`
+- попадает на внешний dashboard в блок `Readiness & Watchdog`
+
+На сервере это можно запускать и вручную, и автоматически:
+
+- ручной запуск: `sudo systemctl start moex-scalper-preopen.service`
+- автоматический таймер: `moex-scalper-preopen.timer`
+- по умолчанию таймер срабатывает в `10:05 MSK` по `понедельник-пятница`

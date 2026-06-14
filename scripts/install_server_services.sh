@@ -24,6 +24,8 @@ render_unit() {
 
 render_unit "deploy/systemd/moex-scalper.service" "$TMP_DIR/moex-scalper.service"
 render_unit "deploy/systemd/moex-scalper-dashboard.service" "$TMP_DIR/moex-scalper-dashboard.service"
+render_unit "deploy/systemd/moex-scalper-preopen.service" "$TMP_DIR/moex-scalper-preopen.service"
+render_unit "deploy/systemd/moex-scalper-preopen.timer" "$TMP_DIR/moex-scalper-preopen.timer"
 render_unit "deploy/systemd/moex-scalper-analyze.service" "$TMP_DIR/moex-scalper-analyze.service"
 render_unit "deploy/systemd/moex-scalper-analyze.timer" "$TMP_DIR/moex-scalper-analyze.timer"
 render_unit "deploy/systemd/moex-scalper-research.service" "$TMP_DIR/moex-scalper-research.service"
@@ -43,6 +45,8 @@ render_unit "deploy/systemd/moex-scalper-update.timer" "$TMP_DIR/moex-scalper-up
 
 sudo cp "$TMP_DIR/moex-scalper.service" "$SYSTEMD_DIR/moex-scalper.service"
 sudo cp "$TMP_DIR/moex-scalper-dashboard.service" "$SYSTEMD_DIR/moex-scalper-dashboard.service"
+sudo cp "$TMP_DIR/moex-scalper-preopen.service" "$SYSTEMD_DIR/moex-scalper-preopen.service"
+sudo cp "$TMP_DIR/moex-scalper-preopen.timer" "$SYSTEMD_DIR/moex-scalper-preopen.timer"
 sudo cp "$TMP_DIR/moex-scalper-analyze.service" "$SYSTEMD_DIR/moex-scalper-analyze.service"
 sudo cp "$TMP_DIR/moex-scalper-analyze.timer" "$SYSTEMD_DIR/moex-scalper-analyze.timer"
 sudo cp "$TMP_DIR/moex-scalper-research.service" "$SYSTEMD_DIR/moex-scalper-research.service"
@@ -63,6 +67,7 @@ sudo cp "$TMP_DIR/moex-scalper-update.timer" "$SYSTEMD_DIR/moex-scalper-update.t
 sudo systemctl daemon-reload
 sudo systemctl enable moex-scalper.service
 sudo systemctl enable moex-scalper-dashboard.service
+sudo systemctl enable --now moex-scalper-preopen.timer
 sudo systemctl enable --now moex-scalper-analyze.timer
 sudo systemctl enable --now moex-scalper-research.timer
 sudo systemctl enable --now moex-scalper-summary.timer
@@ -75,6 +80,8 @@ sudo systemctl enable --now moex-scalper-update.timer
 echo "Installed:"
 echo "- moex-scalper.service"
 echo "- moex-scalper-dashboard.service"
+echo "- moex-scalper-preopen.service"
+echo "- moex-scalper-preopen.timer"
 echo "- moex-scalper-analyze.service"
 echo "- moex-scalper-analyze.timer"
 echo "- moex-scalper-research.service"
@@ -101,6 +108,7 @@ echo
 echo "Logs:"
 echo "  sudo journalctl -u moex-scalper.service -f"
 echo "  sudo journalctl -u moex-scalper-dashboard.service -f"
+echo "  sudo journalctl -u moex-scalper-preopen.service -f"
 echo "  sudo journalctl -u moex-scalper-analyze.service -f"
 echo "  sudo journalctl -u moex-scalper-research.service -f"
 echo "  sudo journalctl -u moex-scalper-summary.service -f"
