@@ -37,6 +37,12 @@ sudo systemctl restart "$SERVICE_NAME"
 if sudo systemctl list-unit-files moex-scalper-dashboard.service >/dev/null 2>&1; then
   sudo systemctl restart moex-scalper-dashboard.service
 fi
+if sudo systemctl list-unit-files moex-scalper-watchdog.service >/dev/null 2>&1; then
+  sudo systemctl start moex-scalper-watchdog.service || true
+fi
+if sudo systemctl list-unit-files moex-scalper-summary.service >/dev/null 2>&1; then
+  sudo systemctl start moex-scalper-summary.service || true
+fi
 
 NEW_REV="$(git rev-parse HEAD)"
 echo "Updated $CURRENT_REV -> $NEW_REV and restarted $SERVICE_NAME"

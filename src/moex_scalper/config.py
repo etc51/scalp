@@ -123,6 +123,14 @@ class ScalperConfig:
     max_open_positions: int
     run_duration_seconds: float
     runtime_dir: Path
+    state_heartbeat_seconds: float
+    stream_idle_reconnect_seconds: float
+    stream_reconnect_delay_seconds: float
+    watchdog_max_state_age_seconds: int
+    watchdog_max_market_data_age_seconds: int
+    watchdog_market_data_warmup_seconds: int
+    watchdog_timeout_seconds: float
+    watchdog_check_dashboard_http: bool
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -196,4 +204,21 @@ def load_config(args: argparse.Namespace, *, require_auth: bool = True) -> Scalp
         max_open_positions=max(1, int(os.getenv("SCALPER_MAX_OPEN_POSITIONS", default_max_open_positions))),
         run_duration_seconds=max(0.0, float(args.run_seconds)),
         runtime_dir=Path(os.getenv("SCALPER_RUNTIME_DIR", "runtime")),
+        state_heartbeat_seconds=max(1.0, float(os.getenv("SCALPER_STATE_HEARTBEAT_SECONDS", "30"))),
+        stream_idle_reconnect_seconds=max(5.0, float(os.getenv("SCALPER_STREAM_IDLE_RECONNECT_SECONDS", "45"))),
+        stream_reconnect_delay_seconds=max(0.5, float(os.getenv("SCALPER_STREAM_RECONNECT_DELAY_SECONDS", "1"))),
+        watchdog_max_state_age_seconds=max(5, int(os.getenv("SCALPER_WATCHDOG_MAX_STATE_AGE_SECONDS", "120"))),
+        watchdog_max_market_data_age_seconds=max(
+            5,
+            int(os.getenv("SCALPER_WATCHDOG_MAX_MARKET_DATA_AGE_SECONDS", "90")),
+        ),
+        watchdog_market_data_warmup_seconds=max(
+            5,
+            int(os.getenv("SCALPER_WATCHDOG_MARKET_DATA_WARMUP_SECONDS", "90")),
+        ),
+        watchdog_timeout_seconds=max(0.5, float(os.getenv("SCALPER_WATCHDOG_TIMEOUT_SECONDS", "3"))),
+        watchdog_check_dashboard_http=parse_bool(
+            os.getenv("SCALPER_WATCHDOG_CHECK_DASHBOARD_HTTP", "1"),
+            default=True,
+        ),
     )

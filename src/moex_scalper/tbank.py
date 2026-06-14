@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterable, AsyncIterator
 from decimal import Decimal
 
@@ -20,6 +21,7 @@ from tbank_latency_check.checker import configure_grpc_root_certificates
 
 
 NANOS_IN_SECOND = Decimal("1000000000")
+LOGGER = logging.getLogger("moex_scalper.tbank")
 
 
 def quotation_to_decimal(value: object) -> Decimal:
@@ -95,27 +97,70 @@ async def stream_orderbooks(
     *,
     depth: int,
     stop_event: asyncio.Event,
+    idle_timeout_seconds: float,
+    reconnect_delay_seconds: float,
 ) -> AsyncIterator[MarketSnapshot]:
     spec_by_uid = {instrument.instrument_id: instrument for instrument in instruments}
-    request_iterator = market_data_request_iterator(
-        [instrument.instrument_id for instrument in instruments],
-        depth=depth,
-        stop_event=stop_event,
-    )
-    async for event in services.market_data_stream.market_data_stream(request_iterator):
-        orderbook = event.orderbook
-        if orderbook is None:
-            continue
-        spec = spec_by_uid.get(orderbook.instrument_uid)
-        if spec is None or not orderbook.bids or not orderbook.asks:
-            continue
-        bid = orderbook.bids[0]
-        ask = orderbook.asks[0]
-        yield MarketSnapshot(
-            instrument=spec,
-            bid_price=quotation_to_decimal(bid.price),
-            ask_price=quotation_to_decimal(ask.price),
-            bid_quantity=int(bid.quantity),
-            ask_quantity=int(ask.quantity),
-            at=orderbook.time,
+    instrument_ids = [instrument.instrument_id for instrument in instruments]
+    while not stop_event.is_set():
+        request_iterator = market_data_request_iterator(
+            instrument_ids,
+            depth=depth,
+            stop_event=stop_event,
         )
+        stream = services.market_data_stream.market_data_stream(request_iterator)
+        reconnect_reason = "stream_closed"
+        try:
+            while not stop_event.is_set():
+                try:
+                    event = await asyncio.wait_for(anext(stream), timeout=idle_timeout_seconds)
+                except StopAsyncIteration:
+                    reconnect_reason = "stream_closed"
+                    break
+                except asyncio.TimeoutError:
+                    reconnect_reason = f"idle_timeout_{idle_timeout_seconds:.0f}s"
+                    break
+                orderbook = event.orderbook
+                if orderbook is None:
+                    continue
+                spec = spec_by_uid.get(orderbook.instrument_uid)
+                if spec is None or not orderbook.bids or not orderbook.asks:
+                    continue
+                bid = orderbook.bids[0]
+                ask = orderbook.asks[0]
+                yield MarketSnapshot(
+                    instrument=spec,
+                    bid_price=quotation_to_decimal(bid.price),
+                    ask_price=quotation_to_decimal(ask.price),
+                    bid_quantity=int(bid.quantity),
+                    ask_quantity=int(ask.quantity),
+                    at=orderbook.time,
+                )
+        except Exception as exc:  # noqa: BLE001
+            reconnect_reason = f"{type(exc).__name__}: {exc}"
+        finally:
+            await _safe_aclose(stream)
+            await _safe_aclose(request_iterator)
+
+        if stop_event.is_set():
+            break
+
+        LOGGER.warning(
+            "Market data stream reconnecting reason=%s delay=%.1fs",
+            reconnect_reason,
+            reconnect_delay_seconds,
+        )
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=reconnect_delay_seconds)
+        except asyncio.TimeoutError:
+            continue
+
+
+async def _safe_aclose(stream: object) -> None:
+    closer = getattr(stream, "aclose", None)
+    if closer is None:
+        return
+    try:
+        await closer()
+    except Exception:  # noqa: BLE001
+        return

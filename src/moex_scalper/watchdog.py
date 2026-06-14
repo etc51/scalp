@@ -19,9 +19,11 @@ def run_watchdog(
     state_path = runtime_dir / "dashboard_state.json"
     session_path = runtime_dir / "paper_session.json"
     watchdog_url = f"http://127.0.0.1:{_dashboard_port()}/health"
-    max_state_age_seconds = int(_env_value("SCALPER_WATCHDOG_MAX_STATE_AGE_SECONDS", "120"))
-    dashboard_timeout_seconds = float(_env_value("SCALPER_WATCHDOG_TIMEOUT_SECONDS", "3"))
-    check_dashboard_http = parse_bool(_env_value("SCALPER_WATCHDOG_CHECK_DASHBOARD_HTTP", "1"), default=True)
+    max_state_age_seconds = int(config.watchdog_max_state_age_seconds)
+    max_market_data_age_seconds = int(config.watchdog_max_market_data_age_seconds)
+    market_data_warmup_seconds = int(config.watchdog_market_data_warmup_seconds)
+    dashboard_timeout_seconds = float(config.watchdog_timeout_seconds)
+    check_dashboard_http = bool(config.watchdog_check_dashboard_http)
 
     now = datetime.now(timezone.utc)
     restart_reasons: list[str] = []
@@ -31,11 +33,25 @@ def run_watchdog(
     session_payload, session_error = _load_json(session_path)
 
     state_updated_at = _parse_dt((state_payload or {}).get("updated_at"))
+    state_started_at = _parse_dt((state_payload or {}).get("started_at"))
     state_age_seconds = (
         round((now - state_updated_at).total_seconds(), 3)
         if state_updated_at is not None
         else None
     )
+    state_uptime_seconds = (
+        round((now - state_started_at).total_seconds(), 3)
+        if state_started_at is not None
+        else None
+    )
+    market_data_payload = (state_payload or {}).get("market_data") or {}
+    market_data_updated_at = _parse_dt(market_data_payload.get("last_received_at"))
+    market_data_age_seconds = (
+        round((now - market_data_updated_at).total_seconds(), 3)
+        if market_data_updated_at is not None
+        else None
+    )
+    market_data_error = None
     if state_error == "missing":
         restart_reasons.append("missing_dashboard_state")
     elif state_error is not None:
@@ -44,6 +60,13 @@ def run_watchdog(
         restart_reasons.append("dashboard_state_missing_updated_at")
     elif state_age_seconds > max_state_age_seconds:
         restart_reasons.append("dashboard_state_stale")
+    elif market_data_updated_at is None:
+        if state_uptime_seconds is not None and state_uptime_seconds > market_data_warmup_seconds:
+            restart_reasons.append("market_data_missing")
+            market_data_error = "missing"
+    elif market_data_age_seconds > max_market_data_age_seconds:
+        restart_reasons.append("market_data_stale")
+        market_data_error = "stale"
 
     if session_error == "missing":
         warning_reasons.append("missing_paper_session")
@@ -84,10 +107,19 @@ def run_watchdog(
             "dashboard_state": {
                 "path": str(state_path),
                 "exists": state_path.exists(),
+                "started_at": state_started_at.isoformat() if state_started_at else None,
+                "uptime_seconds": state_uptime_seconds,
                 "updated_at": state_updated_at.isoformat() if state_updated_at else None,
                 "age_seconds": state_age_seconds,
                 "max_age_seconds": max_state_age_seconds,
                 "error": state_error,
+            },
+            "market_data": {
+                "last_received_at": market_data_updated_at.isoformat() if market_data_updated_at else None,
+                "age_seconds": market_data_age_seconds,
+                "max_age_seconds": max_market_data_age_seconds,
+                "warmup_seconds": market_data_warmup_seconds,
+                "error": market_data_error,
             },
             "paper_session": {
                 "path": str(session_path),

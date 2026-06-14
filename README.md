@@ -453,10 +453,19 @@ python3 -m moex_scalper watchdog --write-report
 
 - проверяет, существует ли `runtime/dashboard_state.json`
 - смотрит, не устарел ли `updated_at` в `dashboard_state.json`
+- отдельно проверяет, не пропал ли поток `market-data` даже если сам процесс еще жив
 - проверяет, читается ли `paper_session.json`
 - проверяет локальный `http://127.0.0.1:8080/health`
 - пишет отчет в `runtime/watchdog/latest.json`
 - если контур завис, server wrapper перезапускает `moex-scalper.service` и `moex-scalper-dashboard.service`
+
+Технически это теперь устроено так:
+
+- рантайм пишет heartbeat-состояние в `dashboard_state.json` даже если в эту секунду нет новой сделки
+- `market_data.last_received_at` хранится отдельно, поэтому watchdog различает
+  - `процесс жив, но поток данных свежий`
+  - `процесс жив, но market-data завис`
+- сам market-data stream пытается переподключиться до того, как watchdog дойдет до внешнего перезапуска
 
 На сервере это можно запускать и вручную, и автоматически:
 

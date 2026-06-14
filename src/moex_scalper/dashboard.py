@@ -435,6 +435,7 @@ HTML = """<!doctype html>
     const renderWatchdog = (watchdog) => {
       if (!watchdog) return '<div class="empty">Пока нет watchdog-report</div>';
       const stateCheck = watchdog.checks?.dashboard_state || {};
+      const marketCheck = watchdog.checks?.market_data || {};
       const sessionCheck = watchdog.checks?.paper_session || {};
       const httpCheck = watchdog.checks?.dashboard_http || {};
       return renderTable(
@@ -444,8 +445,12 @@ HTML = """<!doctype html>
           ["Restart Required", String(watchdog.restart_required)],
           ["Restart Reasons", (watchdog.restart_reasons || []).join(", ") || "—"],
           ["Warnings", (watchdog.warning_reasons || []).join(", ") || "—"],
+          ["Uptime", stateCheck.uptime_seconds === null || stateCheck.uptime_seconds === undefined ? "—" : fmtNum(stateCheck.uptime_seconds, 1) + " s"],
           ["State Age", stateCheck.age_seconds === null || stateCheck.age_seconds === undefined ? "—" : fmtNum(stateCheck.age_seconds, 1) + " s"],
           ["Max State Age", stateCheck.max_age_seconds === null || stateCheck.max_age_seconds === undefined ? "—" : fmtNum(stateCheck.max_age_seconds, 0) + " s"],
+          ["Last Market Data", marketCheck.last_received_at || "—"],
+          ["Market Data Age", marketCheck.age_seconds === null || marketCheck.age_seconds === undefined ? "—" : fmtNum(marketCheck.age_seconds, 1) + " s"],
+          ["Max Market Age", marketCheck.max_age_seconds === null || marketCheck.max_age_seconds === undefined ? "—" : fmtNum(marketCheck.max_age_seconds, 0) + " s"],
           ["Dashboard HTTP", httpCheck.checked ? String(httpCheck.ok) : "skipped"],
           ["Open Positions", fmtNum(sessionCheck.open_positions || 0, 0)],
           ["Next Action", watchdog.next_action || "—"],

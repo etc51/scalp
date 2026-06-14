@@ -51,6 +51,7 @@ class BotState:
     blocked_reasons: Counter[str] = field(default_factory=Counter)
     last_snapshot_summary: dict[str, str] = field(default_factory=dict)
     last_snapshots: dict[str, MarketSnapshot] = field(default_factory=dict)
+    last_market_data_at: datetime | None = None
     stats: dict[str, dict[str, object]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -67,6 +68,7 @@ class ScalperRuntime:
         self.stop_event = asyncio.Event()
         self._last_heartbeat_at: datetime | None = None
         self._last_state_write_at: datetime | None = None
+        self.started_at: datetime | None = None
         self.paper_store = PaperRuntimeStore(config.runtime_dir)
         self.snapshot_recorder = MarketSnapshotRecorder(config.runtime_dir, config.timezone)
         self.active_restrictions = load_active_restrictions(config.runtime_dir)
@@ -94,6 +96,7 @@ class ScalperRuntime:
             ",".join(str(hour) for hour in self.active_restrictions.blocked_entry_hours) or "none",
         )
 
+        self.started_at = datetime.now(timezone.utc)
         async with open_client(self.config) as services:
             if self.config.mode == "live":
                 account_info = await validate_account(services, self.config.account_id)
@@ -127,6 +130,8 @@ class ScalperRuntime:
                 )
                 self._refresh_paper_stats()
 
+            self._write_runtime_state(datetime.now(timezone.utc), executor)
+            state_writer_task = asyncio.create_task(self._periodic_state_writer(executor))
             started = datetime.now(timezone.utc)
             try:
                 async for snapshot in stream_orderbooks(
@@ -134,6 +139,8 @@ class ScalperRuntime:
                     instruments,
                     depth=self.config.orderbook_depth,
                     stop_event=self.stop_event,
+                    idle_timeout_seconds=self.config.stream_idle_reconnect_seconds,
+                    reconnect_delay_seconds=self.config.stream_reconnect_delay_seconds,
                 ):
                     await self._handle_snapshot(snapshot, executor)
                     self._maybe_write_runtime_state(snapshot.at, executor)
@@ -145,6 +152,11 @@ class ScalperRuntime:
                         break
             finally:
                 self.stop_event.set()
+                state_writer_task.cancel()
+                try:
+                    await state_writer_task
+                except asyncio.CancelledError:
+                    pass
                 self._write_runtime_state(datetime.now(timezone.utc), executor)
                 self._log_shutdown_summary()
                 if order_task is not None:
@@ -165,6 +177,7 @@ class ScalperRuntime:
 
     async def _handle_snapshot(self, snapshot: MarketSnapshot, executor: Any) -> None:
         self.state.snapshots_processed += 1
+        self.state.last_market_data_at = datetime.now(timezone.utc)
         try:
             self.snapshot_recorder.append(snapshot)
         except Exception:  # noqa: BLE001
@@ -341,6 +354,17 @@ class ScalperRuntime:
         self._write_runtime_state(now, executor)
         self._last_state_write_at = now
 
+    async def _periodic_state_writer(self, executor: Any) -> None:
+        interval = max(1.0, self.config.state_heartbeat_seconds)
+        while not self.stop_event.is_set():
+            now = datetime.now(timezone.utc)
+            self._write_runtime_state(now, executor)
+            self._last_state_write_at = now
+            try:
+                await asyncio.wait_for(self.stop_event.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                continue
+
     def _write_runtime_state(self, now: datetime, executor: Any) -> None:
         latest_prices = {
             instrument_id: snapshot.bid_price
@@ -377,6 +401,7 @@ class ScalperRuntime:
             }
 
         payload = {
+            "started_at": self.started_at.isoformat() if self.started_at else None,
             "updated_at": now.isoformat(),
             "mode": self.config.mode,
             "watchlist": list(self.config.watchlist),
@@ -392,6 +417,15 @@ class ScalperRuntime:
             "snapshots_processed": self.state.snapshots_processed,
             "signals_detected": self.state.signals_detected,
             "realized_pnl_rub": str(self.risk.realized_pnl_rub),
+            "market_data": {
+                "last_received_at": self.state.last_market_data_at.isoformat() if self.state.last_market_data_at else None,
+                "age_seconds": (
+                    round((now - self.state.last_market_data_at).total_seconds(), 3)
+                    if self.state.last_market_data_at is not None
+                    else None
+                ),
+                "stale_after_seconds": self.config.watchdog_max_market_data_age_seconds,
+            },
             "blocked_reasons": dict(self.state.blocked_reasons),
             "stats": self.state.stats,
             "portfolio": portfolio,
