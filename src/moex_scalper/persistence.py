@@ -185,6 +185,11 @@ class PaperRuntimeStore:
     def load_stats(self, current_day: str) -> dict[str, dict[str, Any]]:
         overview = self._read_summary(self.overview_path, scope="all_time")
         today = self._read_summary(self._daily_summary_path(current_day), scope=current_day)
+        if not self.overview_path.exists():
+            _atomic_write_json(self.overview_path, overview)
+        daily_path = self._daily_summary_path(current_day)
+        if not daily_path.exists():
+            _atomic_write_json(daily_path, today)
         return {"overall": overview, "today": today}
 
     def _daily_summary_path(self, day_key: str) -> Path:
