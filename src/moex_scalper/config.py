@@ -90,6 +90,21 @@ def parse_timezone(value: str | None, default: str = "Europe/Moscow") -> tuple[s
         raise SystemExit(f"Unknown timezone: {name}")
 
 
+def parse_regime_filter_mode(value: str | None, default: str = "off") -> str:
+    candidate = (value or default).strip().lower() or default
+    allowed = {
+        "off",
+        "trend_not_bearish",
+        "trend_bullish",
+    }
+    if candidate not in allowed:
+        raise SystemExit(
+            "Invalid SCALPER_REGIME_FILTER_MODE. Expected one of: "
+            + ", ".join(sorted(allowed))
+        )
+    return candidate
+
+
 @dataclass(slots=True, frozen=True)
 class ScalperConfig:
     token: str
@@ -113,6 +128,7 @@ class ScalperConfig:
     min_expected_edge_bps: Decimal
     min_net_take_profit_bps: Decimal
     target_net_take_profit_buffer_bps: Decimal
+    regime_filter_mode: str
     premium_share_commission_bps: Decimal
     paper_initial_cash_rub: Decimal
     paper_max_gross_leverage: Decimal
@@ -197,6 +213,7 @@ def load_config(args: argparse.Namespace, *, require_auth: bool = True) -> Scalp
         target_net_take_profit_buffer_bps=Decimal(
             os.getenv("SCALPER_TARGET_NET_TAKE_PROFIT_BUFFER_BPS", "2")
         ),
+        regime_filter_mode=parse_regime_filter_mode(os.getenv("SCALPER_REGIME_FILTER_MODE", "off")),
         premium_share_commission_bps=Decimal(
             os.getenv("SCALPER_PREMIUM_SHARE_COMMISSION_BPS", str(DEFAULT_PREMIUM_SHARE_COMMISSION_BPS))
         ),

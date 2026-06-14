@@ -54,6 +54,7 @@ def build_strategy_diagnostics(config: ScalperConfig) -> dict[str, Any]:
         warnings.append("net_take_profit_below_target_buffer")
 
     return {
+        "regime_filter_mode": config.regime_filter_mode,
         "premium_roundtrip_commission_bps": str(roundtrip_commission_bps),
         "configured_take_profit_bps": str(config.take_profit_bps),
         "configured_net_take_profit_bps": str(net_take_profit_bps),

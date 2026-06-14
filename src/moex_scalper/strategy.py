@@ -13,6 +13,11 @@ from .domain import EntrySignal, ExitDecision, MarketSnapshot, Position, Side
 @dataclass(slots=True)
 class InstrumentMomentumState:
     history: deque[tuple[object, Decimal]] = field(default_factory=deque)
+    current_minute_at: object | None = None
+    current_minute_open: Decimal | None = None
+    current_minute_close: Decimal | None = None
+    previous_minute_open: Decimal | None = None
+    previous_minute_close: Decimal | None = None
 
 
 class ModerateScalpingStrategy:
@@ -43,6 +48,7 @@ class ModerateScalpingStrategy:
             return None, "already_in_position", {}
 
         state = self._state_for(snapshot.instrument.instrument_id)
+        self._update_minute_state(state, snapshot)
         state.history.append((snapshot.at, snapshot.mid_price))
         cutoff = snapshot.at - timedelta(seconds=self._config.impulse_window_seconds)
         while state.history and state.history[0][0] < cutoff:
@@ -75,6 +81,11 @@ class ModerateScalpingStrategy:
         metrics["net_take_profit_bps"] = net_take_profit_bps
         if net_take_profit_bps < self._config.min_net_take_profit_bps:
             return None, "net_take_profit_too_low", metrics
+
+        regime_allowed, regime_reason, regime_metrics = self._check_regime_filter(state)
+        metrics.update(regime_metrics)
+        if not regime_allowed:
+            return None, regime_reason, metrics
 
         reason = (
             f"impulse_bps={impulse_bps:.2f} spread_bps={snapshot.spread_bps:.2f} "
@@ -110,3 +121,55 @@ class ModerateScalpingStrategy:
         if (snapshot.at - position.opened_at).total_seconds() >= position.time_stop_seconds:
             return ExitDecision(reason="time_stop")
         return None
+
+    def _update_minute_state(self, state: InstrumentMomentumState, snapshot: MarketSnapshot) -> None:
+        local_minute = snapshot.at.astimezone(self._config.timezone).replace(second=0, microsecond=0)
+        mid_price = snapshot.mid_price
+        if state.current_minute_at is None:
+            state.current_minute_at = local_minute
+            state.current_minute_open = mid_price
+            state.current_minute_close = mid_price
+            return
+
+        if local_minute == state.current_minute_at:
+            state.current_minute_close = mid_price
+            return
+
+        state.previous_minute_open = state.current_minute_open
+        state.previous_minute_close = state.current_minute_close
+        state.current_minute_at = local_minute
+        state.current_minute_open = mid_price
+        state.current_minute_close = mid_price
+
+    def _check_regime_filter(
+        self,
+        state: InstrumentMomentumState,
+    ) -> tuple[bool, str, dict[str, Decimal | str]]:
+        metrics: dict[str, Decimal | str] = {
+            "regime_filter_mode": self._config.regime_filter_mode,
+        }
+        mode = self._config.regime_filter_mode
+        if mode == "off":
+            return True, "ok", metrics
+
+        previous_open = state.previous_minute_open
+        previous_close = state.previous_minute_close
+        if previous_open is None or previous_close is None or previous_open <= 0:
+            return False, "regime_prev_minute_warmup", metrics
+
+        previous_return_bps = ((previous_close - previous_open) / previous_open) * Decimal("10000")
+        metrics["prev_minute_open"] = previous_open
+        metrics["prev_minute_close"] = previous_close
+        metrics["prev_minute_return_bps"] = previous_return_bps
+
+        if mode == "trend_not_bearish":
+            if previous_close < previous_open:
+                return False, "regime_prev_minute_bearish", metrics
+            return True, "ok", metrics
+
+        if mode == "trend_bullish":
+            if previous_close <= previous_open:
+                return False, "regime_prev_minute_not_bullish", metrics
+            return True, "ok", metrics
+
+        return True, "ok", metrics

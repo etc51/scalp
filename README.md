@@ -167,6 +167,7 @@ python3 -m tbank_latency_check --iterations 5 --stream-iterations 2 --write-repo
 - учет комиссии Premium для акций Мосбиржи по умолчанию как `0.04%` на сторону (`4.0 bps`)
 - фильтр по спреду, дисбалансу стакана, короткому импульсу, минимальному net take-profit после комиссии и `time-stop`
 - отдельный target-buffer по чистой цели после комиссии через `SCALPER_TARGET_NET_TAKE_PROFIT_BUFFER_BPS`, чтобы autotune не оставлял стратегию без запаса на издержки
+- опциональный minute-regime filter через `SCALPER_REGIME_FILTER_MODE` для новых входов: `off`, `trend_not_bearish`, `trend_bullish`
 - paper-контур умеет считать gross leverage и buying power через `SCALPER_PAPER_MAX_GROSS_LEVERAGE`
 - дневной лимит убытка и cooldown
 - watchdog и dashboard теперь отдельно подсвечивают конфиг, который сам по себе блокирует новые входы
@@ -195,6 +196,10 @@ python3 -m moex_scalper run --mode live
 - short по акциям по умолчанию выключен
 - `SCALPER_MIN_NET_TAKE_PROFIT_BPS` задает минимальную чистую цель в `bps` после roundtrip-комиссии Premium; это режет слишком тесные сделки даже если импульс формально проходит
 - `SCALPER_TARGET_NET_TAKE_PROFIT_BUFFER_BPS` задает желаемый запас сверх этого floor; `doctor`, `summary`, `dashboard` и autotune показывают и используют рекомендуемый минимальный `take-profit`
+- `SCALPER_REGIME_FILTER_MODE` влияет только на новые входы и использует предыдущую 1m-свечу инструмента:
+  - `off` — без regime-filter
+  - `trend_not_bearish` — не входить после bearish предыдущей минуты
+  - `trend_bullish` — входить только после bullish предыдущей минуты
 - это рабочий paper-контур для накопления статистики и data-driven тюнинга
 
 ## GitHub Auto-Update On Server
