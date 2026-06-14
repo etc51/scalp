@@ -76,6 +76,13 @@ class ScalperRuntime:
             self.config.premium_share_commission_bps,
             self.config.min_expected_edge_bps,
         )
+        LOGGER.info(
+            "Entry schedule timezone=%s weekdays=%s window=%s-%s",
+            self.config.timezone_name,
+            ",".join(str(day) for day in self.config.entry_weekdays),
+            self.config.entry_start_time.isoformat(timespec="minutes"),
+            self.config.entry_end_time.isoformat(timespec="minutes"),
+        )
 
         async with open_client(self.config) as services:
             if self.config.mode == "live":
@@ -158,6 +165,11 @@ class ScalperRuntime:
             exit_decision = self.strategy.evaluate_exit(position, snapshot)
             if exit_decision:
                 await self._close_position(snapshot, exit_decision.reason, executor)
+            return
+
+        entry_allowed, entry_reason = self.risk.entry_allowed_at(snapshot.at)
+        if not entry_allowed:
+            self.state.blocked_reasons[entry_reason] += 1
             return
 
         signal, block_reason, metrics = self.strategy.diagnose_entry(
@@ -346,6 +358,12 @@ class ScalperRuntime:
             "mode": self.config.mode,
             "watchlist": list(self.config.watchlist),
             "position_sizing_mode": self.config.position_sizing_mode,
+            "entry_schedule": {
+                "timezone": self.config.timezone_name,
+                "weekdays": list(self.config.entry_weekdays),
+                "start": self.config.entry_start_time.isoformat(timespec="minutes"),
+                "end": self.config.entry_end_time.isoformat(timespec="minutes"),
+            },
             "snapshots_processed": self.state.snapshots_processed,
             "signals_detected": self.state.signals_detected,
             "realized_pnl_rub": str(self.risk.realized_pnl_rub),

@@ -26,6 +26,17 @@ class RiskManager:
             self.realized_pnl_rub = Decimal("0")
             self.cooldown_until.clear()
 
+    def entry_allowed_at(self, now: datetime) -> tuple[bool, str]:
+        local_now = now.astimezone(self.config.timezone)
+        if local_now.weekday() not in self.config.entry_weekdays:
+            return False, "entry_weekday_closed"
+        current_time = local_now.time().replace(tzinfo=None)
+        if current_time < self.config.entry_start_time:
+            return False, "entry_before_window"
+        if current_time > self.config.entry_end_time:
+            return False, "entry_after_window"
+        return True, "ok"
+
     def can_open(
         self,
         snapshot: MarketSnapshot,

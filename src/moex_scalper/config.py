@@ -3,8 +3,10 @@ from __future__ import annotations
 import argparse
 import os
 from dataclasses import dataclass
+from datetime import time, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .commission import DEFAULT_PREMIUM_SHARE_COMMISSION_BPS
 
@@ -32,6 +34,62 @@ def parse_csv(value: str | None, default: list[str]) -> list[str]:
     return [item.strip().upper() for item in value.split(",") if item.strip()]
 
 
+def parse_time_value(value: str | None, default: str) -> time:
+    candidate = (value or default).strip()
+    try:
+        return time.fromisoformat(candidate)
+    except ValueError as exc:
+        raise SystemExit(f"Invalid time value: {candidate}") from exc
+
+
+def parse_weekdays(value: str | None, default: str = "mon,tue,wed,thu,fri") -> tuple[int, ...]:
+    raw = (value or default).strip().lower()
+    mapping = {
+        "mon": 0,
+        "monday": 0,
+        "tue": 1,
+        "tues": 1,
+        "tuesday": 1,
+        "wed": 2,
+        "wednesday": 2,
+        "thu": 3,
+        "thur": 3,
+        "thurs": 3,
+        "thursday": 3,
+        "fri": 4,
+        "friday": 4,
+        "sat": 5,
+        "saturday": 5,
+        "sun": 6,
+        "sunday": 6,
+    }
+    result: list[int] = []
+    for item in raw.split(","):
+        token = item.strip()
+        if not token:
+            continue
+        if token.isdigit():
+            weekday = int(token)
+        else:
+            weekday = mapping.get(token, -1)
+        if weekday not in range(7):
+            raise SystemExit(f"Invalid weekday value: {token}")
+        result.append(weekday)
+    if not result:
+        raise SystemExit("SCALPER_ENTRY_WEEKDAYS must not be empty.")
+    return tuple(dict.fromkeys(result))
+
+
+def parse_timezone(value: str | None, default: str = "Europe/Moscow") -> tuple[str, ZoneInfo | timezone]:
+    name = (value or default).strip() or default
+    try:
+        return name, ZoneInfo(name)
+    except ZoneInfoNotFoundError:
+        if name == "Europe/Moscow":
+            return name, timezone(timedelta(hours=3), name="MSK")
+        raise SystemExit(f"Unknown timezone: {name}")
+
+
 @dataclass(slots=True, frozen=True)
 class ScalperConfig:
     token: str
@@ -56,6 +114,11 @@ class ScalperConfig:
     premium_share_commission_bps: Decimal
     paper_initial_cash_rub: Decimal
     position_sizing_mode: str
+    timezone_name: str
+    timezone: ZoneInfo
+    entry_weekdays: tuple[int, ...]
+    entry_start_time: time
+    entry_end_time: time
     allow_short: bool
     max_open_positions: int
     run_duration_seconds: float
@@ -85,6 +148,7 @@ def load_config(args: argparse.Namespace) -> ScalperConfig:
         raise SystemExit("TBANK_ACCOUNT_ID is required for live mode.")
 
     default_max_open_positions = "4" if args.mode == "paper" else "1"
+    timezone_name, parsed_timezone = parse_timezone(os.getenv("SCALPER_TIMEZONE"))
 
     return ScalperConfig(
         token=token,
@@ -111,6 +175,11 @@ def load_config(args: argparse.Namespace) -> ScalperConfig:
         ),
         paper_initial_cash_rub=Decimal(os.getenv("SCALPER_PAPER_INITIAL_CASH_RUB", "300000")),
         position_sizing_mode=os.getenv("SCALPER_POSITION_SIZING_MODE", "equal_weight_cash").strip().lower(),
+        timezone_name=timezone_name,
+        timezone=parsed_timezone,
+        entry_weekdays=parse_weekdays(os.getenv("SCALPER_ENTRY_WEEKDAYS")),
+        entry_start_time=parse_time_value(os.getenv("SCALPER_ENTRY_START"), "10:15"),
+        entry_end_time=parse_time_value(os.getenv("SCALPER_ENTRY_END"), "17:45"),
         allow_short=parse_bool(os.getenv("SCALPER_ALLOW_SHORT"), default=False),
         max_open_positions=max(1, int(os.getenv("SCALPER_MAX_OPEN_POSITIONS", default_max_open_positions))),
         run_duration_seconds=max(0.0, float(args.run_seconds)),

@@ -284,7 +284,7 @@ HTML = """<!doctype html>
         document.getElementById("allTrades").textContent = fmtNum(overallStats?.trade_count || 0, 0);
 
         document.getElementById("subline").textContent =
-          `watchlist: ${(state.watchlist || []).join(", ")} | updated: ${state.updated_at || "—"} | snapshots: ${state.snapshots_processed || 0} | signals: ${state.signals_detected || 0}`;
+          `watchlist: ${(state.watchlist || []).join(", ")} | schedule: ${state.entry_schedule?.start || "—"}-${state.entry_schedule?.end || "—"} ${state.entry_schedule?.timezone || ""} | updated: ${state.updated_at || "—"} | snapshots: ${state.snapshots_processed || 0} | signals: ${state.signals_detected || 0}`;
 
         document.getElementById("positionsWrap").innerHTML = renderTable(
           ["Ticker", "Qty", "Entry", "Current Bid", "Entry Fee", "Opened"],
@@ -350,6 +350,12 @@ def _default_payload() -> dict[str, object]:
         "mode": "paper",
         "watchlist": [],
         "position_sizing_mode": None,
+        "entry_schedule": {
+            "timezone": None,
+            "weekdays": [],
+            "start": None,
+            "end": None,
+        },
         "snapshots_processed": 0,
         "signals_detected": 0,
         "realized_pnl_rub": "0",
