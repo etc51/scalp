@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly daily summary report for MOEX scalper
+
+[Timer]
+OnCalendar=Mon..Fri 18:26:00
+Persistent=true
+Unit=moex-scalper-summary.service
+
+[Install]
+WantedBy=timers.target

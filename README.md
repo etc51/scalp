@@ -263,6 +263,7 @@ sudo systemctl start moex-scalper-update.service
 - `dashboard_state.json` — текущее состояние для внешнего dashboard
 - `analysis/latest.json` — nightly trade-analysis по реальным paper-сделкам
 - `research/latest.json` — nightly indicator research по market snapshots внутри торгового окна
+- `summary/latest.json` — nightly daily digest со сводкой состояния paper-контура и next action
 - `tuning/latest.json` — последнее решение safe autotune по параметрам стратегии
 - `restrictions/latest.json` — последнее решение по авто-ограничениям входов
 - `restrictions/active.json` — активные ограничения новых входов по тикерам и часам
@@ -354,6 +355,27 @@ python3 -m moex_scalper research --days 5 --write-report
 - ручной запуск: `sudo systemctl start moex-scalper-research.service`
 - автоматический таймер: `moex-scalper-research.timer`
 - по умолчанию таймер срабатывает в `18:22 MSK` по `понедельник-пятница`
+
+## Daily Summary
+
+Команда daily-summary:
+
+```bash
+python3 -m moex_scalper summarize --write-report
+```
+
+Что делает:
+
+- собирает `dashboard_state`, `analysis`, `optimizer`, `research`, `tuning`, `restrictions`, `watchdog`
+- формирует единый nightly digest для оператора
+- пишет `headline`, `focus` и `next_action`
+- сохраняет отчет в `runtime/summary/latest.json`
+
+На сервере это можно запускать и вручную, и автоматически:
+
+- ручной запуск: `sudo systemctl start moex-scalper-summary.service`
+- автоматический таймер: `moex-scalper-summary.timer`
+- по умолчанию таймер срабатывает в `18:26 MSK` по `понедельник-пятница`
 
 ## Safe Paper Autotune
 

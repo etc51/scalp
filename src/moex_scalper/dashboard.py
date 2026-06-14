@@ -280,8 +280,19 @@ HTML = """<!doctype html>
 
     <div class="layout">
       <div class="panel">
+        <h2>Daily Summary</h2>
+        <div id="summaryWrap"></div>
+      </div>
+      <div class="panel">
         <h2>Indicator Research</h2>
         <div id="researchSummaryWrap"></div>
+      </div>
+    </div>
+
+    <div class="layout">
+      <div class="panel">
+        <h2>Summary Focus</h2>
+        <div id="summaryFocusWrap"></div>
       </div>
       <div class="panel">
         <h2>Research Tickers</h2>
@@ -558,6 +569,34 @@ HTML = """<!doctype html>
       );
     };
 
+    const renderDailySummary = (summary) => {
+      if (!summary) return '<div class="empty">Пока нет daily-summary</div>';
+      return renderTable(
+        ["Metric", "Value"],
+        [
+          ["Headline", summary.headline || "—"],
+          ["Next Action", summary.next_action || "—"],
+          ["Mode", summary.mode || "—"],
+          ["Today Trades", fmtNum(summary.today?.trade_count || 0, 0)],
+          ["Today Net PnL", `<span class="${pnlClass(summary.today?.net_pnl_rub)}">${fmtRub(summary.today?.net_pnl_rub)}</span>`],
+          ["Signals", fmtNum(summary.today?.signals_detected || 0, 0)],
+          ["Snapshots", fmtNum(summary.today?.snapshots_processed || 0, 0)],
+          ["Overall Trades", fmtNum(summary.overall?.trade_count || 0, 0)],
+          ["Overall Net PnL", `<span class="${pnlClass(summary.overall?.net_pnl_rub)}">${fmtRub(summary.overall?.net_pnl_rub)}</span>`],
+          ["Analysis", summary.analysis?.assessment || summary.analysis?.status || "—"],
+          ["Optimizer", summary.optimizer?.status || "—"],
+          ["Research", summary.research?.status || "—"],
+          ["Watchdog", summary.watchdog?.status || "—"],
+        ],
+      );
+    };
+
+    const renderSummaryFocus = (summary) => {
+      const focus = summary?.focus || [];
+      if (!focus.length) return '<div class="empty">Нет summary-focus</div>';
+      return `<div class="chips">${focus.map((item) => `<div class="chip">${item}</div>`).join("")}</div>`;
+    };
+
     const renderResearchTickers = (research) => {
       const tickers = research?.tickers || [];
       if (!tickers.length) return '<div class="empty">Пока нет ticker-research</div>';
@@ -619,6 +658,7 @@ HTML = """<!doctype html>
         const activeRestrictions = state.active_restrictions || null;
         const analysis = state.analysis || null;
         const research = state.research || null;
+        const summary = state.summary || null;
 
         document.getElementById("statusText").textContent = "online";
         document.getElementById("mode").textContent = `${state.mode || "-"} / ${state.position_sizing_mode || "-"}`;
@@ -710,6 +750,8 @@ HTML = """<!doctype html>
         document.getElementById("tuningWrap").innerHTML = renderTuning(tuning);
         document.getElementById("analysisSummaryWrap").innerHTML = renderAnalysisSummary(analysis);
         document.getElementById("analysisFocusWrap").innerHTML = renderFocus(analysis);
+        document.getElementById("summaryWrap").innerHTML = renderDailySummary(summary);
+        document.getElementById("summaryFocusWrap").innerHTML = renderSummaryFocus(summary);
         document.getElementById("researchSummaryWrap").innerHTML = renderResearchSummary(research);
         document.getElementById("researchTickerWrap").innerHTML = renderResearchTickers(research);
         document.getElementById("analysisTickerWrap").innerHTML = renderBreakdown(analysis?.by_ticker, "Ticker");
@@ -763,6 +805,7 @@ def _default_payload() -> dict[str, object]:
         "restrictions": None,
         "analysis": None,
         "research": None,
+        "summary": None,
         "portfolio": {
             "initial_cash_rub": None,
             "cash_rub": None,
@@ -786,6 +829,7 @@ def serve_dashboard(*, host: str, port: int, runtime_dir: Path) -> None:
     restrictions_path = runtime_dir / "restrictions" / "latest.json"
     analysis_path = runtime_dir / "analysis" / "latest.json"
     research_path = runtime_dir / "research" / "latest.json"
+    summary_path = runtime_dir / "summary" / "latest.json"
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
@@ -836,6 +880,11 @@ def serve_dashboard(*, host: str, port: int, runtime_dir: Path) -> None:
                         payload["research"] = json.loads(research_path.read_text(encoding="utf-8"))
                     except json.JSONDecodeError:
                         payload["research"] = None
+                if summary_path.exists():
+                    try:
+                        payload["summary"] = json.loads(summary_path.read_text(encoding="utf-8"))
+                    except json.JSONDecodeError:
+                        payload["summary"] = None
                 body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "application/json; charset=utf-8")

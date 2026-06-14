@@ -13,6 +13,7 @@ from .optimizer import optimize_parameters
 from .research import build_indicator_research
 from .restrictions import build_restrictions
 from .runtime import ScalperRuntime
+from .summary import build_daily_summary
 from .tbank import open_client, resolve_instruments, validate_account
 from .tuning import tune_parameters
 from .watchdog import run_watchdog
@@ -93,6 +94,14 @@ def main() -> int:
             input_path=args.input,
             top_n=args.top,
             days=args.days,
+            write_report=args.write_report,
+        )
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "summarize":
+        payload = build_daily_summary(
+            config,
             write_report=args.write_report,
         )
         print(json.dumps(payload, ensure_ascii=False, indent=2))
