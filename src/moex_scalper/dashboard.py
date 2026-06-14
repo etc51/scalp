@@ -723,7 +723,7 @@ HTML = """<!doctype html>
         const summary = state.summary || null;
 
         document.getElementById("statusText").textContent = "online";
-        document.getElementById("mode").textContent = `${state.mode || "-"} / ${state.position_sizing_mode || "-"}`;
+        document.getElementById("mode").textContent = `${state.mode || "-"} / ${state.position_sizing_mode || "-"} / ${fmtNum(state.portfolio?.max_gross_leverage, 2)}x`;
         document.getElementById("cash").textContent = fmtRub(state.portfolio?.cash_rub);
         document.getElementById("marketValue").textContent = fmtRub(state.portfolio?.market_value_rub);
         document.getElementById("equity").textContent = fmtRub(state.portfolio?.equity_rub);
@@ -876,9 +876,15 @@ def _default_payload() -> dict[str, object]:
         "portfolio": {
             "initial_cash_rub": None,
             "cash_rub": None,
+            "borrowed_cash_rub": None,
             "market_value_rub": None,
             "unrealized_pnl_rub": None,
             "equity_rub": None,
+            "gross_exposure_rub": None,
+            "max_gross_exposure_rub": None,
+            "remaining_buying_power_rub": None,
+            "max_gross_leverage": None,
+            "gross_leverage_used": None,
             "deployment_pct": None,
         },
         "positions": [],

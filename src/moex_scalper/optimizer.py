@@ -469,6 +469,7 @@ def simulate_candidate(
     executor = PaperExecutor(
         commission_model=CommissionModel(config.premium_share_commission_bps),
         initial_cash_rub=config.paper_initial_cash_rub,
+        max_gross_leverage=config.paper_max_gross_leverage,
     )
     positions: dict[str, Position] = {}
     trades: list[ClosedTrade] = []
@@ -552,6 +553,8 @@ def simulate_candidate(
             default_quantity_lots=config.order_quantity_lots,
             max_position_notional_rub=config.max_position_notional_rub,
             position_sizing_mode=config.position_sizing_mode,
+            positions=list(positions.values()),
+            latest_prices=latest_bid_by_instrument,
         )
         if quantity_lots <= 0:
             blocked[sizing_reason] += 1

@@ -114,6 +114,7 @@ class ScalperConfig:
     min_net_take_profit_bps: Decimal
     premium_share_commission_bps: Decimal
     paper_initial_cash_rub: Decimal
+    paper_max_gross_leverage: Decimal
     position_sizing_mode: str
     timezone_name: str
     timezone: ZoneInfo | timezone
@@ -196,6 +197,7 @@ def load_config(args: argparse.Namespace, *, require_auth: bool = True) -> Scalp
             os.getenv("SCALPER_PREMIUM_SHARE_COMMISSION_BPS", str(DEFAULT_PREMIUM_SHARE_COMMISSION_BPS))
         ),
         paper_initial_cash_rub=Decimal(os.getenv("SCALPER_PAPER_INITIAL_CASH_RUB", "300000")),
+        paper_max_gross_leverage=max(Decimal("1.0"), Decimal(os.getenv("SCALPER_PAPER_MAX_GROSS_LEVERAGE", "1.0"))),
         position_sizing_mode=os.getenv("SCALPER_POSITION_SIZING_MODE", "equal_weight_cash").strip().lower(),
         timezone_name=timezone_name,
         timezone=parsed_timezone,

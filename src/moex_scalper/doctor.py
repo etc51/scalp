@@ -35,6 +35,7 @@ async def build_doctor_payload(config: ScalperConfig) -> tuple[dict[str, Any], i
         "premium_roundtrip_commission_bps": str(
             CommissionModel(config.premium_share_commission_bps).roundtrip_bps
         ),
+        "paper_max_gross_leverage": str(config.paper_max_gross_leverage),
         "strategy_diagnostics": strategy_diagnostics,
         "warnings": warnings,
         "errors": errors,

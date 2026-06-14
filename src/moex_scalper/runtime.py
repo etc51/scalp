@@ -125,6 +125,7 @@ class ScalperRuntime:
                 executor = PaperExecutor(
                     commission_model=commission_model,
                     initial_cash_rub=self.config.paper_initial_cash_rub,
+                    max_gross_leverage=self.config.paper_max_gross_leverage,
                 )
                 self._restore_paper_state(
                     executor,
@@ -344,6 +345,11 @@ class ScalperRuntime:
                 default_quantity_lots=self.config.order_quantity_lots,
                 max_position_notional_rub=self.config.max_position_notional_rub,
                 position_sizing_mode=self.config.position_sizing_mode,
+                positions=list(self.state.positions.values()),
+                latest_prices={
+                    instrument_id: item.bid_price
+                    for instrument_id, item in self.state.last_snapshots.items()
+                },
             )
 
         quantity_lots = self.config.order_quantity_lots
@@ -378,17 +384,30 @@ class ScalperRuntime:
             market_value_rub = executor.market_value_rub(positions, latest_prices)
             unrealized_pnl_rub = executor.unrealized_pnl_rub(positions, latest_prices)
             equity_rub = executor.equity_rub(positions, latest_prices)
+            gross_exposure_rub = executor.gross_exposure_rub(positions, latest_prices)
+            max_gross_exposure_rub = executor.max_gross_exposure_rub(positions, latest_prices)
+            remaining_buying_power_rub = executor.remaining_buying_power_rub(positions, latest_prices)
             self._save_paper_session(executor)
             self._refresh_paper_stats()
             portfolio = {
                 "initial_cash_rub": str(executor.initial_cash_rub),
                 "cash_rub": str(executor.cash_rub),
+                "borrowed_cash_rub": str(executor.borrowed_cash_rub),
                 "market_value_rub": str(market_value_rub),
                 "unrealized_pnl_rub": str(unrealized_pnl_rub),
                 "equity_rub": str(equity_rub),
+                "gross_exposure_rub": str(gross_exposure_rub),
+                "max_gross_exposure_rub": str(max_gross_exposure_rub),
+                "remaining_buying_power_rub": str(remaining_buying_power_rub),
+                "max_gross_leverage": str(executor.max_gross_leverage),
+                "gross_leverage_used": str(
+                    (gross_exposure_rub / equity_rub)
+                    if equity_rub > 0
+                    else Decimal("0")
+                ),
                 "deployment_pct": str(
-                    (market_value_rub / executor.initial_cash_rub * Decimal("100"))
-                    if executor.initial_cash_rub > 0
+                    (market_value_rub / max_gross_exposure_rub * Decimal("100"))
+                    if max_gross_exposure_rub > 0
                     else Decimal("0")
                 ),
             }
@@ -396,9 +415,15 @@ class ScalperRuntime:
             portfolio = {
                 "initial_cash_rub": None,
                 "cash_rub": None,
+                "borrowed_cash_rub": None,
                 "market_value_rub": None,
                 "unrealized_pnl_rub": None,
                 "equity_rub": None,
+                "gross_exposure_rub": None,
+                "max_gross_exposure_rub": None,
+                "remaining_buying_power_rub": None,
+                "max_gross_leverage": None,
+                "gross_leverage_used": None,
                 "deployment_pct": None,
             }
 

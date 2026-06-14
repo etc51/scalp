@@ -28,6 +28,7 @@ def utc_now() -> datetime:
 class PaperExecutor:
     commission_model: CommissionModel
     initial_cash_rub: Decimal = Decimal("300000")
+    max_gross_leverage: Decimal = Decimal("1.0")
     cash_rub: Decimal = field(init=False)
 
     def __post_init__(self) -> None:
@@ -36,6 +37,10 @@ class PaperExecutor:
     @property
     def available_cash_rub(self) -> Decimal:
         return self.cash_rub
+
+    @property
+    def borrowed_cash_rub(self) -> Decimal:
+        return max(Decimal("0"), -self.cash_rub)
 
     def restore_cash(self, cash_rub: Decimal) -> None:
         self.cash_rub = cash_rub
@@ -49,28 +54,24 @@ class PaperExecutor:
         default_quantity_lots: int,
         max_position_notional_rub: Decimal,
         position_sizing_mode: str,
+        positions: list[Any],
+        latest_prices: dict[str, Decimal],
     ) -> tuple[int, Decimal, str]:
+        buying_power_rub = self.remaining_buying_power_rub(positions, latest_prices)
         if position_sizing_mode == "fixed_lots":
             quantity_lots = default_quantity_lots
         else:
             remaining_slots = max(1, max_open_positions - open_positions)
-            target_budget = self.cash_rub
+            target_budget = buying_power_rub
             if position_sizing_mode == "equal_weight_cash":
-                target_budget = self.cash_rub / Decimal(remaining_slots)
+                target_budget = buying_power_rub / Decimal(remaining_slots)
             target_budget = min(target_budget, max_position_notional_rub)
             quantity_lots = self._max_affordable_lots(snapshot, target_budget)
 
         if quantity_lots <= 0:
-            return 0, Decimal("0"), "insufficient_cash"
+            return 0, Decimal("0"), "insufficient_buying_power"
 
         entry_notional = snapshot.buy_notional_rub * Decimal(quantity_lots)
-        total_cost = entry_notional + self.commission_model.fee_rub(entry_notional)
-        if total_cost > self.cash_rub:
-            quantity_lots = self._max_affordable_lots(snapshot, self.cash_rub)
-            if quantity_lots <= 0:
-                return 0, Decimal("0"), "insufficient_cash"
-            entry_notional = snapshot.buy_notional_rub * Decimal(quantity_lots)
-
         return quantity_lots, entry_notional, "ok"
 
     def execute_entry_sync(self, snapshot: MarketSnapshot, quantity_lots: int) -> ExecutionReport:
@@ -113,6 +114,20 @@ class PaperExecutor:
 
     def equity_rub(self, positions: list[Any], latest_prices: dict[str, Decimal]) -> Decimal:
         return self.cash_rub + self.market_value_rub(positions, latest_prices)
+
+    def gross_exposure_rub(self, positions: list[Any], latest_prices: dict[str, Decimal]) -> Decimal:
+        return self.market_value_rub(positions, latest_prices)
+
+    def max_gross_exposure_rub(self, positions: list[Any], latest_prices: dict[str, Decimal]) -> Decimal:
+        equity = self.equity_rub(positions, latest_prices)
+        if equity <= 0:
+            return Decimal("0")
+        return equity * self.max_gross_leverage
+
+    def remaining_buying_power_rub(self, positions: list[Any], latest_prices: dict[str, Decimal]) -> Decimal:
+        max_exposure = self.max_gross_exposure_rub(positions, latest_prices)
+        gross_exposure = self.gross_exposure_rub(positions, latest_prices)
+        return max(Decimal("0"), max_exposure - gross_exposure)
 
     def _max_affordable_lots(self, snapshot: MarketSnapshot, budget_rub: Decimal) -> int:
         lot_notional = snapshot.buy_notional_rub
