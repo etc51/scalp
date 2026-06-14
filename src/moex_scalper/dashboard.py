@@ -280,6 +280,17 @@ HTML = """<!doctype html>
 
     <div class="layout">
       <div class="panel">
+        <h2>Indicator Research</h2>
+        <div id="researchSummaryWrap"></div>
+      </div>
+      <div class="panel">
+        <h2>Research Tickers</h2>
+        <div id="researchTickerWrap"></div>
+      </div>
+    </div>
+
+    <div class="layout">
+      <div class="panel">
         <h2>Ticker Breakdown</h2>
         <div id="analysisTickerWrap"></div>
       </div>
@@ -524,6 +535,48 @@ HTML = """<!doctype html>
       );
     };
 
+    const renderResearchSummary = (research) => {
+      const summary = research?.summary || null;
+      if (!summary) return '<div class="empty">Пока нет research-report</div>';
+      return renderTable(
+        ["Metric", "Value"],
+        [
+          ["Backend", research?.indicator_backend || "—"],
+          ["Timeframe", research?.timeframe || "—"],
+          ["In-Window Snapshots", fmtNum(summary.snapshot_count, 0)],
+          ["Minute Bars", fmtNum(summary.minute_bars, 0)],
+          ["Tickers", fmtNum(summary.ticker_count, 0)],
+          ["Bullish", fmtNum(summary.bullish_tickers, 0)],
+          ["Bearish", fmtNum(summary.bearish_tickers, 0)],
+          ["Neutral", fmtNum(summary.neutral_tickers, 0)],
+          ["Strongest Return", summary.strongest_return_ticker ? `${summary.strongest_return_ticker.ticker} (${fmtNum(summary.strongest_return_ticker.session_return_bps, 2)} bps)` : "—"],
+          ["Weakest Return", summary.weakest_return_ticker ? `${summary.weakest_return_ticker.ticker} (${fmtNum(summary.weakest_return_ticker.session_return_bps, 2)} bps)` : "—"],
+          ["Highest RSI", summary.highest_rsi_ticker ? `${summary.highest_rsi_ticker.ticker} (${fmtNum(summary.highest_rsi_ticker.rsi14, 1)})` : "—"],
+          ["Highest Volatility", summary.highest_volatility_ticker ? `${summary.highest_volatility_ticker.ticker} (${fmtNum(summary.highest_volatility_ticker.realized_volatility_bps, 2)} bps)` : "—"],
+          ["Focus", (research?.focus || []).map((item) => item.message).join(" | ") || "—"],
+        ],
+      );
+    };
+
+    const renderResearchTickers = (research) => {
+      const tickers = research?.tickers || [];
+      if (!tickers.length) return '<div class="empty">Пока нет ticker-research</div>';
+      return renderTable(
+        ["Ticker", "Trend", "Return", "Range", "Vol", "RSI14", "EMA Gap", "MACD Hist", "Spread"],
+        tickers.map((item) => [
+          item.ticker,
+          item.trend_label,
+          fmtNum(item.session_return_bps, 2) + " bps",
+          fmtNum(item.session_range_bps, 2) + " bps",
+          fmtNum(item.realized_volatility_bps, 2) + " bps",
+          fmtNum(item.rsi14, 1),
+          fmtNum(item.ema_gap_bps, 2) + " bps",
+          fmtNum(item.macd_hist, 4),
+          fmtNum(item.average_spread_bps, 2) + " bps",
+        ]),
+      );
+    };
+
     const renderFocus = (analysis) => {
       const focus = analysis?.focus || [];
       if (!focus.length) return '<div class="empty">Нет focus-items</div>';
@@ -565,6 +618,7 @@ HTML = """<!doctype html>
         const restrictions = state.restrictions || null;
         const activeRestrictions = state.active_restrictions || null;
         const analysis = state.analysis || null;
+        const research = state.research || null;
 
         document.getElementById("statusText").textContent = "online";
         document.getElementById("mode").textContent = `${state.mode || "-"} / ${state.position_sizing_mode || "-"}`;
@@ -656,6 +710,8 @@ HTML = """<!doctype html>
         document.getElementById("tuningWrap").innerHTML = renderTuning(tuning);
         document.getElementById("analysisSummaryWrap").innerHTML = renderAnalysisSummary(analysis);
         document.getElementById("analysisFocusWrap").innerHTML = renderFocus(analysis);
+        document.getElementById("researchSummaryWrap").innerHTML = renderResearchSummary(research);
+        document.getElementById("researchTickerWrap").innerHTML = renderResearchTickers(research);
         document.getElementById("analysisTickerWrap").innerHTML = renderBreakdown(analysis?.by_ticker, "Ticker");
         document.getElementById("analysisHourWrap").innerHTML = renderBreakdown(analysis?.by_hour, "Hour");
       } catch (error) {
@@ -706,6 +762,7 @@ def _default_payload() -> dict[str, object]:
         "tuning": None,
         "restrictions": None,
         "analysis": None,
+        "research": None,
         "portfolio": {
             "initial_cash_rub": None,
             "cash_rub": None,
@@ -728,6 +785,7 @@ def serve_dashboard(*, host: str, port: int, runtime_dir: Path) -> None:
     tuning_path = runtime_dir / "tuning" / "latest.json"
     restrictions_path = runtime_dir / "restrictions" / "latest.json"
     analysis_path = runtime_dir / "analysis" / "latest.json"
+    research_path = runtime_dir / "research" / "latest.json"
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
@@ -773,6 +831,11 @@ def serve_dashboard(*, host: str, port: int, runtime_dir: Path) -> None:
                         payload["analysis"] = json.loads(analysis_path.read_text(encoding="utf-8"))
                     except json.JSONDecodeError:
                         payload["analysis"] = None
+                if research_path.exists():
+                    try:
+                        payload["research"] = json.loads(research_path.read_text(encoding="utf-8"))
+                    except json.JSONDecodeError:
+                        payload["research"] = None
                 body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "application/json; charset=utf-8")

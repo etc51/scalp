@@ -262,6 +262,7 @@ sudo systemctl start moex-scalper-update.service
 - `stats/daily/YYYY-MM-DD.json` — дневная статистика по сделкам
 - `dashboard_state.json` — текущее состояние для внешнего dashboard
 - `analysis/latest.json` — nightly trade-analysis по реальным paper-сделкам
+- `research/latest.json` — nightly indicator research по market snapshots внутри торгового окна
 - `tuning/latest.json` — последнее решение safe autotune по параметрам стратегии
 - `restrictions/latest.json` — последнее решение по авто-ограничениям входов
 - `restrictions/active.json` — активные ограничения новых входов по тикерам и часам
@@ -330,6 +331,29 @@ python3 -m moex_scalper analyze --days 5 --write-report
 - ручной запуск: `sudo systemctl start moex-scalper-analyze.service`
 - автоматический таймер: `moex-scalper-analyze.timer`
 - по умолчанию таймер срабатывает в `18:06 MSK` по `понедельник-пятница`
+
+## Indicator Research
+
+Команда indicator-research:
+
+```bash
+python3 -m moex_scalper research --days 5 --write-report
+```
+
+Что делает:
+
+- читает накопленные `runtime/market/*.jsonl`
+- берет только snapshots внутри разрешенного entry-window
+- агрегирует их в `1m`-свечи по тикерам
+- считает `EMA`, `RSI14`, `MACD` и intraday volatility
+- если установлен `pandas_ta`, может использовать его; иначе считает индикаторы через `pandas`
+- пишет отчет в `runtime/research/latest.json`
+
+На сервере это можно запускать и вручную, и автоматически:
+
+- ручной запуск: `sudo systemctl start moex-scalper-research.service`
+- автоматический таймер: `moex-scalper-research.timer`
+- по умолчанию таймер срабатывает в `18:22 MSK` по `понедельник-пятница`
 
 ## Safe Paper Autotune
 

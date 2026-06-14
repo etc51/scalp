@@ -10,6 +10,7 @@ from .commission import CommissionModel
 from .config import ScalperConfig, build_parser, load_config, load_dotenv
 from .dashboard import serve_dashboard
 from .optimizer import optimize_parameters
+from .research import build_indicator_research
 from .restrictions import build_restrictions
 from .runtime import ScalperRuntime
 from .tbank import open_client, resolve_instruments, validate_account
@@ -75,6 +76,18 @@ def main() -> int:
 
     if args.command == "analyze":
         payload = analyze_trades(
+            config,
+            date_key=args.date,
+            input_path=args.input,
+            top_n=args.top,
+            days=args.days,
+            write_report=args.write_report,
+        )
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "research":
+        payload = build_indicator_research(
             config,
             date_key=args.date,
             input_path=args.input,

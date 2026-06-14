@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly indicator research report for MOEX scalper
+
+[Timer]
+OnCalendar=Mon..Fri 18:22:00
+Persistent=true
+Unit=moex-scalper-research.service
+
+[Install]
+WantedBy=timers.target
