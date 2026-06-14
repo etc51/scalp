@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly GitHub update for MOEX scalper
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+Unit=moex-scalper-update.service
+
+[Install]
+WantedBy=timers.target

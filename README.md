@@ -191,3 +191,54 @@ python3 -m moex_scalper run --mode live
 - текущий live-режим рассчитан на наш measured latency и использует market orders
 - это стартовый боевой каркас, а не финальная production-версия
 - short по акциям по умолчанию выключен
+
+## GitHub Auto-Update On Server
+
+Теперь репозиторий можно держать источником истины, а сервер обновлять из GitHub автоматически ночью.
+
+Что для этого есть в проекте:
+
+- `scripts/run_scalper_service.sh` запускает бота как `systemd`-сервис
+- `scripts/update_from_github.sh` делает `git pull`, обновляет зависимости и перезапускает сервис
+- `scripts/install_server_services.sh` ставит `systemd`-юниты
+- `deploy/systemd/moex-scalper-update.timer` запускает ночную проверку обновлений в `03:30` по `Europe/Moscow`
+
+Базовая схема на сервере:
+
+```bash
+cd /opt
+sudo git clone https://github.com/etc51/scalp.git tbank-latency-check
+sudo chown -R codex:codex /opt/tbank-latency-check
+cd /opt/tbank-latency-check
+python3.12 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install --upgrade pip
+python3 -m pip install -r requirements.txt
+python3 -m pip install -e .
+cp .env.example .env
+```
+
+Установка сервисов:
+
+```bash
+cd /opt/tbank-latency-check
+bash scripts/install_server_services.sh /opt/tbank-latency-check codex
+sudo systemctl start moex-scalper.service
+```
+
+Полезные команды:
+
+```bash
+sudo systemctl status moex-scalper.service
+sudo systemctl restart moex-scalper.service
+sudo systemctl stop moex-scalper.service
+sudo journalctl -u moex-scalper.service -f
+sudo systemctl status moex-scalper-update.timer
+sudo systemctl start moex-scalper-update.service
+```
+
+Безопасность запуска:
+
+- пока в `.env` стоит `SCALPER_MODE=paper`, сервис безопасно крутится в paper-режиме
+- для реальной торговли нужно осознанно перевести `.env` в `SCALPER_MODE=live`
+- `.env`, `reports/` и `runtime/` в git не коммитятся
