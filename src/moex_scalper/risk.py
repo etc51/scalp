@@ -8,19 +8,22 @@ from .config import ScalperConfig
 from .domain import ClosedTrade, MarketSnapshot
 
 
-def trading_day_key(moment: datetime) -> str:
-    return moment.astimezone(timezone.utc).strftime("%Y-%m-%d")
+def trading_day_key(moment: datetime, timezone_info: object) -> str:
+    return moment.astimezone(timezone_info).date().isoformat()
 
 
 @dataclass(slots=True)
 class RiskManager:
     config: ScalperConfig
     realized_pnl_rub: Decimal = Decimal("0")
-    current_day: str = field(default_factory=lambda: trading_day_key(datetime.now(timezone.utc)))
+    current_day: str = field(init=False)
     cooldown_until: dict[str, datetime] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        self.current_day = trading_day_key(datetime.now(timezone.utc), self.config.timezone)
+
     def _roll_day(self, now: datetime) -> None:
-        day = trading_day_key(now)
+        day = trading_day_key(now, self.config.timezone)
         if day != self.current_day:
             self.current_day = day
             self.realized_pnl_rub = Decimal("0")

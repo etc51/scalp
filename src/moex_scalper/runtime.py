@@ -69,7 +69,7 @@ class ScalperRuntime:
         self._last_heartbeat_at: datetime | None = None
         self._last_state_write_at: datetime | None = None
         self.started_at: datetime | None = None
-        self.paper_store = PaperRuntimeStore(config.runtime_dir)
+        self.paper_store = PaperRuntimeStore(config.runtime_dir, config.timezone)
         self.snapshot_recorder = MarketSnapshotRecorder(config.runtime_dir, config.timezone)
         self.active_restrictions = load_active_restrictions(config.runtime_dir)
 
@@ -498,7 +498,11 @@ class ScalperRuntime:
         if not payload:
             return
 
-        restored = restore_runtime_entities(payload, instruments=instruments)
+        restored = restore_runtime_entities(
+            payload,
+            instruments=instruments,
+            timezone_info=self.config.timezone,
+        )
         executor.restore_cash(restored["cash_rub"])
         self.state.positions = {
             position.instrument.instrument_id: position
@@ -513,7 +517,7 @@ class ScalperRuntime:
         self.state.trades_today = [
             trade
             for trade in restored["trades_today"]
-            if trade.closed_at.astimezone(timezone.utc).strftime("%Y-%m-%d") == self.risk.current_day
+            if trade.closed_at.astimezone(self.config.timezone).date().isoformat() == self.risk.current_day
         ]
         if self.paper_store.seed_history_if_empty(self.state.trades_today):
             LOGGER.info("Seeded paper trade history from restored session trades=%s", len(self.state.trades_today))

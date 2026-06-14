@@ -275,6 +275,11 @@ sudo systemctl start moex-scalper-update.service
 - после ночного автообновления или перезапуска сервиса поднимать его с сохраненным состоянием
 - смотреть накопительную статистику через dashboard и напрямую из `runtime/`
 
+Важно:
+
+- paper-день и daily-статистика считаются в `Europe/Moscow`, а не по UTC
+- это относится к `paper_session.json`, `stats/daily/*`, dashboard-полю `today` и внутридневному cooldown
+
 ## Strategy Tuning
 
 Для вывода paper-торговли в устойчивый плюс бот теперь может накапливать сырой поток top-of-book снапшотов в:

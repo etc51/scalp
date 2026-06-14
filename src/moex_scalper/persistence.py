@@ -128,8 +128,9 @@ def _empty_summary(scope: str) -> dict[str, Any]:
 
 
 class PaperRuntimeStore:
-    def __init__(self, runtime_dir: Path) -> None:
+    def __init__(self, runtime_dir: Path, timezone_info: object) -> None:
         self.runtime_dir = runtime_dir
+        self.timezone_info = timezone_info
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
         self.session_path = self.runtime_dir / "paper_session.json"
         self.trades_path = self.runtime_dir / "paper_trades.jsonl"
@@ -178,7 +179,7 @@ class PaperRuntimeStore:
         self.trades_path.parent.mkdir(parents=True, exist_ok=True)
         with self.trades_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(serialize_trade(trade), ensure_ascii=False) + "\n")
-        day_key = trading_day_key(trade.closed_at)
+        day_key = trading_day_key(trade.closed_at, self.timezone_info)
         self._update_summary(self._daily_summary_path(day_key), trade, scope=day_key)
         self._update_summary(self.overview_path, trade, scope="all_time")
 
@@ -264,6 +265,7 @@ def restore_runtime_entities(
     payload: dict[str, Any],
     *,
     instruments: dict[str, InstrumentSpec],
+    timezone_info: object,
 ) -> dict[str, Any]:
     positions = [
         position
@@ -297,7 +299,9 @@ def restore_runtime_entities(
         "cash_rub": _decimal(payload.get("cash_rub"), default="0"),
         "positions": positions,
         "trades_today": trades_today,
-        "risk_current_day": str(risk_payload.get("current_day", trading_day_key(datetime.now(timezone.utc)))),
+        "risk_current_day": str(
+            risk_payload.get("current_day", trading_day_key(datetime.now(timezone.utc), timezone_info))
+        ),
         "risk_realized_pnl_rub": _decimal(risk_payload.get("realized_pnl_rub")),
         "cooldown_until": cooldown_until,
         "blocked_reasons": Counter(dict(payload.get("blocked_reasons", {}))),
