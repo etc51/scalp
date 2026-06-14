@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from decimal import Decimal
 
+from .commission import CommissionModel
 from .config import ScalperConfig
 from .domain import EntrySignal, ExitDecision, MarketSnapshot, Position, Side
 
@@ -17,6 +18,7 @@ class InstrumentMomentumState:
 class ModerateScalpingStrategy:
     def __init__(self, config: ScalperConfig) -> None:
         self._config = config
+        self._commission_model = CommissionModel(config.premium_share_commission_bps)
         self._states: dict[str, InstrumentMomentumState] = {}
 
     def _state_for(self, instrument_id: str) -> InstrumentMomentumState:
@@ -55,6 +57,7 @@ class ModerateScalpingStrategy:
             "spread_bps": snapshot.spread_bps,
             "imbalance": snapshot.imbalance,
             "impulse_bps": impulse_bps,
+            "roundtrip_commission_bps": self._commission_model.roundtrip_bps,
         }
         if snapshot.spread_bps > self._config.max_spread_bps:
             return None, "spread_too_wide", metrics
@@ -68,9 +71,14 @@ class ModerateScalpingStrategy:
         if expected_edge_bps < self._config.min_expected_edge_bps:
             return None, "expected_edge_too_low", metrics
 
+        net_take_profit_bps = self._config.take_profit_bps - self._commission_model.roundtrip_bps
+        metrics["net_take_profit_bps"] = net_take_profit_bps
+        if net_take_profit_bps < self._config.min_net_take_profit_bps:
+            return None, "net_take_profit_too_low", metrics
+
         reason = (
             f"impulse_bps={impulse_bps:.2f} spread_bps={snapshot.spread_bps:.2f} "
-            f"imbalance={snapshot.imbalance:.3f}"
+            f"imbalance={snapshot.imbalance:.3f} net_tp_bps={net_take_profit_bps:.2f}"
         )
         return EntrySignal(
             side=Side.BUY,

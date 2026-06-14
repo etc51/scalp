@@ -375,6 +375,7 @@ HTML = """<!doctype html>
           ["TP / SL", `${report.parameters?.take_profit_bps ?? "—"} / ${report.parameters?.stop_loss_bps ?? "—"}`],
           ["Time Stop", report.parameters?.time_stop_seconds ?? "—"],
           ["Expected Edge", report.parameters?.min_expected_edge_bps ?? "—"],
+          ["Net TP Floor", report.parameters?.min_net_take_profit_bps ?? "—"],
           ["Cooldown", report.parameters?.cooldown_seconds ?? "—"],
           ["Profit Factor", fmtNum(report.profit_factor, 2)],
           ["Max Drawdown", fmtRub(report.max_drawdown_rub)],
@@ -396,6 +397,7 @@ HTML = """<!doctype html>
           ["Imbalance Pass", fmtNum(summary.imbalance_pass_rate_pct, 2) + " %"],
           ["Impulse Pass", fmtNum(summary.impulse_pass_rate_pct, 2) + " %"],
           ["Expected Edge Pass", fmtNum(summary.expected_edge_pass_rate_pct, 2) + " %"],
+          ["Net TP Pass", fmtNum(summary.net_take_profit_pass_rate_pct, 2) + " %"],
           ["Avg Spread", fmtNum(summary.average_spread_bps, 2) + " bps"],
           ["Avg Imbalance", fmtNum(summary.average_imbalance, 3)],
           ["Avg Impulse", fmtNum(summary.average_impulse_bps, 2) + " bps"],
@@ -409,7 +411,7 @@ HTML = """<!doctype html>
       const renderOne = (title, rows) => {
         if (!rows.length) return `<div class="subhead">${title}</div><div class="empty">Пока пусто</div>`;
         return `<div class="subhead">${title}</div>${renderTable(
-          [label, "Snapshots", "Ready", "Ready Rate", "Spread", "Imbalance", "Impulse", "Top Blocked"],
+          [label, "Snapshots", "Ready", "Ready Rate", "Spread", "Imbalance", "Impulse", "Net TP", "Top Blocked"],
           rows.map((item) => [
             item.key,
             fmtNum(item.snapshot_count, 0),
@@ -418,6 +420,7 @@ HTML = """<!doctype html>
             fmtNum(item.spread_pass_rate_pct, 1) + " %",
             fmtNum(item.imbalance_pass_rate_pct, 1) + " %",
             fmtNum(item.impulse_pass_rate_pct, 1) + " %",
+            fmtNum(item.net_take_profit_pass_rate_pct, 1) + " %",
             (item.top_blocked_reasons || []).map((reason) => `${reason.reason}=${reason.count}`).join(", ") || "—",
           ]),
         )}`;
@@ -472,6 +475,7 @@ HTML = """<!doctype html>
           ["Stop Loss", parameters.stop_loss_bps ?? "—"],
           ["Time Stop", parameters.time_stop_seconds ?? "—"],
           ["Expected Edge", parameters.min_expected_edge_bps ?? "—"],
+          ["Net TP Floor", parameters.min_net_take_profit_bps ?? "—"],
           ["Cooldown", parameters.cooldown_seconds ?? "—"],
         ],
       );

@@ -17,6 +17,7 @@ PARAMETER_ENV_MAP: dict[str, str] = {
     "stop_loss_bps": "SCALPER_STOP_LOSS_BPS",
     "time_stop_seconds": "SCALPER_TIME_STOP_SECONDS",
     "min_expected_edge_bps": "SCALPER_MIN_EXPECTED_EDGE_BPS",
+    "min_net_take_profit_bps": "SCALPER_MIN_NET_TAKE_PROFIT_BPS",
     "cooldown_seconds": "SCALPER_COOLDOWN_SECONDS",
 }
 
@@ -140,6 +141,7 @@ def current_strategy_parameters(config: ScalperConfig) -> dict[str, str]:
             "stop_loss_bps": config.stop_loss_bps,
             "time_stop_seconds": config.time_stop_seconds,
             "min_expected_edge_bps": config.min_expected_edge_bps,
+            "min_net_take_profit_bps": config.min_net_take_profit_bps,
             "cooldown_seconds": config.cooldown_seconds,
         }
     )

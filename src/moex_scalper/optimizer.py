@@ -257,6 +257,7 @@ def _new_coverage_bucket() -> dict[str, Any]:
         "imbalance_pass_count": 0,
         "impulse_pass_count": 0,
         "expected_edge_pass_count": 0,
+        "net_take_profit_pass_count": 0,
         "blocked": Counter(),
         "sum_spread_bps": Decimal("0"),
         "sum_imbalance": Decimal("0"),
@@ -278,6 +279,8 @@ def _update_coverage_bucket(
     impulse_bps = Decimal(str(metrics.get("impulse_bps", "0")))
     expected_edge_raw = metrics.get("expected_edge_bps")
     expected_edge_bps = Decimal(str(expected_edge_raw)) if expected_edge_raw is not None else None
+    net_take_profit_raw = metrics.get("net_take_profit_bps")
+    net_take_profit_bps = Decimal(str(net_take_profit_raw)) if net_take_profit_raw is not None else None
 
     bucket["snapshot_count"] += 1
     bucket["sum_spread_bps"] += spread_bps
@@ -292,6 +295,11 @@ def _update_coverage_bucket(
         and expected_edge_bps is not None
         and expected_edge_bps >= config.min_expected_edge_bps
     )
+    net_take_profit_pass = signal is not None or (
+        expected_edge_pass
+        and net_take_profit_bps is not None
+        and net_take_profit_bps >= config.min_net_take_profit_bps
+    )
 
     if spread_pass:
         bucket["spread_pass_count"] += 1
@@ -301,6 +309,8 @@ def _update_coverage_bucket(
         bucket["impulse_pass_count"] += 1
     if expected_edge_pass:
         bucket["expected_edge_pass_count"] += 1
+    if net_take_profit_pass:
+        bucket["net_take_profit_pass_count"] += 1
 
     if signal is not None:
         bucket["signal_ready_count"] += 1
@@ -320,6 +330,7 @@ def _finalize_coverage_bucket(key: str, bucket: dict[str, Any]) -> dict[str, Any
         "imbalance_pass_rate_pct": _pct(int(bucket["imbalance_pass_count"]), snapshot_count),
         "impulse_pass_rate_pct": _pct(int(bucket["impulse_pass_count"]), snapshot_count),
         "expected_edge_pass_rate_pct": _pct(int(bucket["expected_edge_pass_count"]), snapshot_count),
+        "net_take_profit_pass_rate_pct": _pct(int(bucket["net_take_profit_pass_count"]), snapshot_count),
         "average_spread_bps": _avg_decimal(bucket["sum_spread_bps"], snapshot_count),
         "average_imbalance": _avg_decimal(bucket["sum_imbalance"], snapshot_count),
         "average_impulse_bps": _avg_decimal(bucket["sum_impulse_bps"], snapshot_count),
@@ -352,6 +363,7 @@ def build_candidate_configs(base: ScalperConfig) -> list[ScalperConfig]:
         "stop_loss_bps": [Decimal("4"), Decimal("6"), Decimal("8"), Decimal("10")],
         "time_stop_seconds": [3.0, 4.0, 6.0, 8.0],
         "min_expected_edge_bps": [Decimal("4"), Decimal("6"), Decimal("8"), Decimal("10")],
+        "min_net_take_profit_bps": [Decimal("2"), Decimal("4"), Decimal("6"), Decimal("8")],
         "cooldown_seconds": [0.0, 1.0, 3.0, 5.0],
     }
     for field_name, values in variants.items():
@@ -373,6 +385,7 @@ def build_candidate_configs(base: ScalperConfig) -> list[ScalperConfig]:
             "stop_loss_bps": Decimal("4"),
             "time_stop_seconds": 3.0,
             "min_expected_edge_bps": Decimal("10"),
+            "min_net_take_profit_bps": Decimal("6"),
             "cooldown_seconds": 5.0,
         },
         {
@@ -383,6 +396,7 @@ def build_candidate_configs(base: ScalperConfig) -> list[ScalperConfig]:
             "stop_loss_bps": Decimal("6"),
             "time_stop_seconds": 4.0,
             "min_expected_edge_bps": Decimal("6"),
+            "min_net_take_profit_bps": Decimal("2"),
             "cooldown_seconds": 1.0,
         },
         {
@@ -393,6 +407,7 @@ def build_candidate_configs(base: ScalperConfig) -> list[ScalperConfig]:
             "stop_loss_bps": Decimal("6"),
             "time_stop_seconds": 8.0,
             "min_expected_edge_bps": Decimal("4"),
+            "min_net_take_profit_bps": Decimal("0"),
             "cooldown_seconds": 0.0,
         },
     ]
@@ -423,6 +438,7 @@ def parameter_signature(config: ScalperConfig) -> str:
             str(config.stop_loss_bps),
             str(config.time_stop_seconds),
             str(config.min_expected_edge_bps),
+            str(config.min_net_take_profit_bps),
             str(config.cooldown_seconds),
         ]
     )
@@ -613,6 +629,7 @@ def simulate_candidate(
             "stop_loss_bps": str(config.stop_loss_bps),
             "time_stop_seconds": config.time_stop_seconds,
             "min_expected_edge_bps": str(config.min_expected_edge_bps),
+            "min_net_take_profit_bps": str(config.min_net_take_profit_bps),
             "cooldown_seconds": config.cooldown_seconds,
         },
         "trade_count": len(trades),

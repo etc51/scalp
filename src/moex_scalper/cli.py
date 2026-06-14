@@ -28,6 +28,7 @@ async def run_doctor(config: ScalperConfig) -> int:
             CommissionModel(config.premium_share_commission_bps).roundtrip_bps
         ),
         "min_expected_edge_bps": str(config.min_expected_edge_bps),
+        "min_net_take_profit_bps": str(config.min_net_take_profit_bps),
     }
 
     async with open_client(config) as services:

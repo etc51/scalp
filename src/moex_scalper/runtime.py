@@ -77,11 +77,12 @@ class ScalperRuntime:
         setup_logging(self.config.runtime_dir)
         commission_model = CommissionModel(self.config.premium_share_commission_bps)
         LOGGER.info(
-            "Starting scalper mode=%s watchlist=%s premium_commission_bps=%s min_expected_edge_bps=%s",
+            "Starting scalper mode=%s watchlist=%s premium_commission_bps=%s min_expected_edge_bps=%s min_net_take_profit_bps=%s",
             self.config.mode,
             ",".join(self.config.watchlist),
             self.config.premium_share_commission_bps,
             self.config.min_expected_edge_bps,
+            self.config.min_net_take_profit_bps,
         )
         LOGGER.info(
             "Entry schedule timezone=%s weekdays=%s window=%s-%s",
