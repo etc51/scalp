@@ -236,31 +236,38 @@ HTML = """<!doctype html>
 
     <div class="layout">
       <div class="panel">
+        <h2>Watchdog</h2>
+        <div id="watchdogWrap"></div>
+      </div>
+      <div class="panel">
         <h2>Current Strategy</h2>
         <div id="strategyWrap"></div>
       </div>
+    </div>
+
+    <div class="layout">
       <div class="panel">
         <h2>Auto Tune</h2>
         <div id="tuningWrap"></div>
       </div>
-    </div>
-
-    <div class="layout">
       <div class="panel">
         <h2>Trade Analysis</h2>
         <div id="analysisSummaryWrap"></div>
       </div>
-      <div class="panel">
-        <h2>Analysis Focus</h2>
-        <div id="analysisFocusWrap"></div>
-      </div>
     </div>
 
     <div class="layout">
       <div class="panel">
+        <h2>Analysis Focus</h2>
+        <div id="analysisFocusWrap"></div>
+      </div>
+      <div class="panel">
         <h2>Ticker Breakdown</h2>
         <div id="analysisTickerWrap"></div>
       </div>
+    </div>
+
+    <div class="layout">
       <div class="panel">
         <h2>Hour Breakdown</h2>
         <div id="analysisHourWrap"></div>
@@ -335,6 +342,28 @@ HTML = """<!doctype html>
           ["Profit Factor", fmtNum(report.profit_factor, 2)],
           ["Max Drawdown", fmtRub(report.max_drawdown_rub)],
           ["Score", fmtNum(report.score, 2)],
+        ],
+      );
+    };
+
+    const renderWatchdog = (watchdog) => {
+      if (!watchdog) return '<div class="empty">Пока нет watchdog-report</div>';
+      const stateCheck = watchdog.checks?.dashboard_state || {};
+      const sessionCheck = watchdog.checks?.paper_session || {};
+      const httpCheck = watchdog.checks?.dashboard_http || {};
+      return renderTable(
+        ["Metric", "Value"],
+        [
+          ["Status", watchdog.status || "—"],
+          ["Restart Required", String(watchdog.restart_required)],
+          ["Restart Reasons", (watchdog.restart_reasons || []).join(", ") || "—"],
+          ["Warnings", (watchdog.warning_reasons || []).join(", ") || "—"],
+          ["State Age", stateCheck.age_seconds === null || stateCheck.age_seconds === undefined ? "—" : fmtNum(stateCheck.age_seconds, 1) + " s"],
+          ["Max State Age", stateCheck.max_age_seconds === null || stateCheck.max_age_seconds === undefined ? "—" : fmtNum(stateCheck.max_age_seconds, 0) + " s"],
+          ["Dashboard HTTP", httpCheck.checked ? String(httpCheck.ok) : "skipped"],
+          ["Open Positions", fmtNum(sessionCheck.open_positions || 0, 0)],
+          ["Next Action", watchdog.next_action || "—"],
+          ["Updated", watchdog.generated_at || "—"],
         ],
       );
     };
@@ -434,6 +463,7 @@ HTML = """<!doctype html>
         const optimizerTop = state.optimizer?.top?.[0] || null;
         const optimizerBaseline = state.optimizer?.baseline || null;
         const optimizerRecommendation = state.optimizer?.recommendation || null;
+        const watchdog = state.watchdog || null;
         const tuning = state.tuning || null;
         const analysis = state.analysis || null;
 
@@ -506,6 +536,7 @@ HTML = """<!doctype html>
           : "";
         document.getElementById("optimizerTopWrap").innerHTML = recommendationLine + renderOptimizer(optimizerTop);
         document.getElementById("optimizerBaselineWrap").innerHTML = renderOptimizer(optimizerBaseline);
+        document.getElementById("watchdogWrap").innerHTML = renderWatchdog(watchdog);
         document.getElementById("strategyWrap").innerHTML = renderStrategy(state.strategy_parameters || null);
         document.getElementById("tuningWrap").innerHTML = renderTuning(tuning);
         document.getElementById("analysisSummaryWrap").innerHTML = renderAnalysisSummary(analysis);
@@ -550,6 +581,7 @@ def _default_payload() -> dict[str, object]:
             "top": [],
             "baseline": None,
         },
+        "watchdog": None,
         "tuning": None,
         "analysis": None,
         "portfolio": {
@@ -570,6 +602,7 @@ def serve_dashboard(*, host: str, port: int, runtime_dir: Path) -> None:
     runtime_dir.mkdir(parents=True, exist_ok=True)
     state_path = runtime_dir / "dashboard_state.json"
     optimizer_path = runtime_dir / "optimizer" / "latest.json"
+    watchdog_path = runtime_dir / "watchdog" / "latest.json"
     tuning_path = runtime_dir / "tuning" / "latest.json"
     analysis_path = runtime_dir / "analysis" / "latest.json"
 
@@ -597,6 +630,11 @@ def serve_dashboard(*, host: str, port: int, runtime_dir: Path) -> None:
                         payload["optimizer"] = json.loads(optimizer_path.read_text(encoding="utf-8"))
                     except json.JSONDecodeError:
                         payload["optimizer"] = {"top": [], "baseline": None}
+                if watchdog_path.exists():
+                    try:
+                        payload["watchdog"] = json.loads(watchdog_path.read_text(encoding="utf-8"))
+                    except json.JSONDecodeError:
+                        payload["watchdog"] = None
                 if tuning_path.exists():
                     try:
                         payload["tuning"] = json.loads(tuning_path.read_text(encoding="utf-8"))

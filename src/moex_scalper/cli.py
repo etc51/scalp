@@ -13,6 +13,7 @@ from .optimizer import optimize_parameters
 from .runtime import ScalperRuntime
 from .tbank import open_client, resolve_instruments, validate_account
 from .tuning import tune_parameters
+from .watchdog import run_watchdog
 
 
 async def run_doctor(config: ScalperConfig) -> int:
@@ -87,6 +88,14 @@ def main() -> int:
         payload = tune_parameters(
             config,
             apply=args.apply,
+            write_report=args.write_report,
+        )
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "watchdog":
+        payload = run_watchdog(
+            config,
             write_report=args.write_report,
         )
         print(json.dumps(payload, ensure_ascii=False, indent=2))

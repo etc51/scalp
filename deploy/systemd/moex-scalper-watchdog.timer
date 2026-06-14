@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodic watchdog for paper MOEX scalper runtime
+
+[Timer]
+OnCalendar=*:0/5
+Persistent=true
+Unit=moex-scalper-watchdog.service
+
+[Install]
+WantedBy=timers.target

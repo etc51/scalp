@@ -263,6 +263,7 @@ sudo systemctl start moex-scalper-update.service
 - `dashboard_state.json` — текущее состояние для внешнего dashboard
 - `analysis/latest.json` — nightly trade-analysis по реальным paper-сделкам
 - `tuning/latest.json` — последнее решение safe autotune по параметрам стратегии
+- `watchdog/latest.json` — последний health-check paper-контура и решение о self-heal
 
 Это позволяет:
 
@@ -351,3 +352,30 @@ python3 -m moex_scalper tune --apply --write-report
 - по умолчанию таймер срабатывает в `18:14 MSK` по `понедельник-пятница`
 
 Это влияет только на новые входы после рестарта. Уже сохраненные открытые `paper`-позиции продолжают жить со своими параметрами, записанными в session-state.
+
+## Runtime Watchdog
+
+Чтобы paper-бот реально жил `24/7`, поверх него есть watchdog-контур.
+
+Команда:
+
+```bash
+python3 -m moex_scalper watchdog --write-report
+```
+
+Что делает:
+
+- проверяет, существует ли `runtime/dashboard_state.json`
+- смотрит, не устарел ли `updated_at` в `dashboard_state.json`
+- проверяет, читается ли `paper_session.json`
+- проверяет локальный `http://127.0.0.1:8080/health`
+- пишет отчет в `runtime/watchdog/latest.json`
+- если контур завис, server wrapper перезапускает `moex-scalper.service` и `moex-scalper-dashboard.service`
+
+На сервере это можно запускать и вручную, и автоматически:
+
+- ручной запуск: `sudo systemctl start moex-scalper-watchdog.service`
+- автоматический таймер: `moex-scalper-watchdog.timer`
+- по умолчанию таймер срабатывает каждые `5 минут`
+
+Это не меняет торговую логику и не влияет на реальные сделки, потому что проект остается строго в `paper`-режиме.
