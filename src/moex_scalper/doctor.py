@@ -75,6 +75,9 @@ async def build_doctor_payload(config: ScalperConfig) -> tuple[dict[str, Any], i
     elif not strategy_diagnostics["viable_for_entry"]:
         payload["status"] = "warning"
         payload["next_action"] = "raise_take_profit_or_lower_net_floor"
+    elif not strategy_diagnostics.get("target_headroom_met", True):
+        payload["status"] = "warning"
+        payload["next_action"] = "raise_take_profit_for_headroom"
     elif warnings:
         payload["status"] = "warning"
         payload["next_action"] = "review_strategy_headroom"

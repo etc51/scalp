@@ -166,6 +166,7 @@ python3 -m tbank_latency_check --iterations 5 --stream-iterations 2 --write-repo
 - стратегия под `moderate scalping`, а не под HFT
 - учет комиссии Premium для акций Мосбиржи по умолчанию как `0.04%` на сторону (`4.0 bps`)
 - фильтр по спреду, дисбалансу стакана, короткому импульсу, минимальному net take-profit после комиссии и `time-stop`
+- отдельный target-buffer по чистой цели после комиссии через `SCALPER_TARGET_NET_TAKE_PROFIT_BUFFER_BPS`, чтобы autotune не оставлял стратегию без запаса на издержки
 - paper-контур умеет считать gross leverage и buying power через `SCALPER_PAPER_MAX_GROSS_LEVERAGE`
 - дневной лимит убытка и cooldown
 - watchdog и dashboard теперь отдельно подсвечивают конфиг, который сам по себе блокирует новые входы
@@ -193,6 +194,7 @@ python3 -m moex_scalper run --mode live
 - разрешена только `paper`-торговля, live-режим остается заблокирован до явного разрешения пользователя
 - short по акциям по умолчанию выключен
 - `SCALPER_MIN_NET_TAKE_PROFIT_BPS` задает минимальную чистую цель в `bps` после roundtrip-комиссии Premium; это режет слишком тесные сделки даже если импульс формально проходит
+- `SCALPER_TARGET_NET_TAKE_PROFIT_BUFFER_BPS` задает желаемый запас сверх этого floor; `doctor`, `summary`, `dashboard` и autotune показывают и используют рекомендуемый минимальный `take-profit`
 - это рабочий paper-контур для накопления статистики и data-driven тюнинга
 
 ## GitHub Auto-Update On Server
@@ -409,6 +411,7 @@ python3 -m moex_scalper tune --apply --write-report
 - не меняет параметры, если в `paper_session.json` есть открытые позиции
 - требует достаточный sample по сделкам
 - если candidate из optimizer реально пригоден, обновляет параметры стратегии в `.env`
+- если optimizer пока не готов, но у текущего конфига слишком маленький запас после комиссии, может все равно безопасно поднять `take-profit` до рекомендованного минимума
 - пишет решение в `runtime/tuning/latest.json` и историю в `runtime/tuning/history.jsonl`
 - после успешного apply перезапускает только `paper`-сервис бота
 

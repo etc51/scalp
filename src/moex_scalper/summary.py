@@ -122,8 +122,13 @@ def build_focus(payload: dict[str, Any]) -> list[str]:
         focus.append(
             "Текущий take-profit после комиссии ниже минимального net-floor; новые входы будут блокироваться."
         )
-    elif "net_take_profit_no_headroom" in list(strategy_diagnostics.get("warnings") or []):
-        focus.append("У стратегии нулевой запас по чистой цели после комиссии; входы разрешены, но запас минимален.")
+    else:
+        warnings = list(strategy_diagnostics.get("warnings") or [])
+        if "net_take_profit_no_headroom" in warnings or "net_take_profit_below_target_buffer" in warnings:
+            focus.append(
+                "У стратегии слишком маленький запас по чистой цели после комиссии; "
+                f"рекомендуемый take-profit сейчас {strategy_diagnostics.get('recommended_take_profit_bps', '—')} bps."
+            )
     if int(today.get("trade_count", 0) or 0) <= 0:
         focus.append("Сегодня нет закрытых paper-сделок.")
     if analysis.get("assessment") == "insufficient_sample":
@@ -167,6 +172,11 @@ def build_headline(payload: dict[str, Any]) -> str:
         return "Doctor не подтвердил готовность API или watchlist; перед сессией нужен ручной разбор."
     if not strategy_diagnostics.get("viable_for_entry", True):
         return "Конфиг стратегии блокирует новые входы: нужно поднять take-profit или ослабить net-floor."
+    if not strategy_diagnostics.get("target_headroom_met", True):
+        return (
+            "У стратегии слишком маленький запас по чистой цели после комиссии; "
+            f"минимально безопасный take-profit сейчас {strategy_diagnostics.get('recommended_take_profit_bps', '—')} bps."
+        )
     if optimizer.get("status") == "no_entry_window_data" and research.get("status") == "no_entry_window_data":
         return "В market-history пока нет валидного in-window sample для optimizer/research."
     if int(today.get("trade_count", 0) or 0) <= 0:
@@ -194,6 +204,8 @@ def build_next_action(payload: dict[str, Any]) -> str:
         return "inspect_api_access"
     if not strategy_diagnostics.get("viable_for_entry", True):
         return "raise_take_profit_or_lower_net_floor"
+    if not strategy_diagnostics.get("target_headroom_met", True):
+        return "raise_take_profit_for_headroom"
     if doctor.get("next_action") not in {None, "none", "review_strategy_headroom"}:
         return str(doctor.get("next_action"))
     if watchdog.get("next_action") not in {None, "none"}:

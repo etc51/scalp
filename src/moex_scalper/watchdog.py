@@ -93,6 +93,8 @@ def run_watchdog(
         warning_reasons.append("live_guard_disabled")
     if not strategy_diagnostics["viable_for_entry"]:
         warning_reasons.append("strategy_config_not_viable")
+    elif not strategy_diagnostics.get("target_headroom_met", True):
+        warning_reasons.append("strategy_config_low_headroom")
 
     open_positions = len(list((session_payload or {}).get("positions", [])))
     status = "healthy"
@@ -217,4 +219,6 @@ def _resolve_next_action(*, restart_reasons: list[str], strategy_diagnostics: di
         return "restart_services"
     if not strategy_diagnostics.get("viable_for_entry", True):
         return "raise_take_profit_or_lower_net_floor"
+    if not strategy_diagnostics.get("target_headroom_met", True):
+        return "raise_take_profit_for_headroom"
     return "none"

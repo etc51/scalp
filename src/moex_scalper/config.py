@@ -112,6 +112,7 @@ class ScalperConfig:
     stop_loss_bps: Decimal
     min_expected_edge_bps: Decimal
     min_net_take_profit_bps: Decimal
+    target_net_take_profit_buffer_bps: Decimal
     premium_share_commission_bps: Decimal
     paper_initial_cash_rub: Decimal
     paper_max_gross_leverage: Decimal
@@ -193,6 +194,9 @@ def load_config(args: argparse.Namespace, *, require_auth: bool = True) -> Scalp
         stop_loss_bps=Decimal(os.getenv("SCALPER_STOP_LOSS_BPS", "10")),
         min_expected_edge_bps=Decimal(os.getenv("SCALPER_MIN_EXPECTED_EDGE_BPS", "14")),
         min_net_take_profit_bps=Decimal(os.getenv("SCALPER_MIN_NET_TAKE_PROFIT_BPS", "4")),
+        target_net_take_profit_buffer_bps=Decimal(
+            os.getenv("SCALPER_TARGET_NET_TAKE_PROFIT_BUFFER_BPS", "2")
+        ),
         premium_share_commission_bps=Decimal(
             os.getenv("SCALPER_PREMIUM_SHARE_COMMISSION_BPS", str(DEFAULT_PREMIUM_SHARE_COMMISSION_BPS))
         ),

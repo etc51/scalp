@@ -360,7 +360,7 @@ def build_candidate_configs(base: ScalperConfig) -> list[ScalperConfig]:
         "max_spread_bps": [Decimal("1.5"), Decimal("2.5"), Decimal("4.0"), Decimal("5.5")],
         "min_imbalance": [Decimal("0.45"), Decimal("0.50"), Decimal("0.55"), Decimal("0.60"), Decimal("0.66")],
         "min_impulse_bps": [Decimal("1.0"), Decimal("1.5"), Decimal("2.5"), Decimal("4.0")],
-        "take_profit_bps": [Decimal("8"), Decimal("10"), Decimal("12"), Decimal("14")],
+        "take_profit_bps": [Decimal("8"), Decimal("10"), Decimal("12"), Decimal("14"), Decimal("16"), Decimal("18")],
         "stop_loss_bps": [Decimal("4"), Decimal("6"), Decimal("8"), Decimal("10")],
         "time_stop_seconds": [3.0, 4.0, 6.0, 8.0],
         "min_expected_edge_bps": [Decimal("4"), Decimal("6"), Decimal("8"), Decimal("10")],

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import ScalperConfig, parse_bool
+from .diagnostics import build_strategy_diagnostics, get_recommended_take_profit_bps
 
 
 PARAMETER_ENV_MAP: dict[str, str] = {
@@ -37,13 +38,37 @@ def tune_parameters(
     analysis_payload = _load_json(analysis_path)
     optimizer_payload = _load_json(optimizer_path)
     session_payload = _load_json(session_path)
+    strategy_diagnostics = build_strategy_diagnostics(config)
 
     current_parameters = current_strategy_parameters(config)
     current_signature = parameter_signature(current_parameters)
     recommendation = dict((optimizer_payload or {}).get("recommendation") or {})
     candidate = dict(recommendation.get("candidate") or {})
-    candidate_parameters = dict(candidate.get("parameters") or {})
-    candidate_signature = parameter_signature(candidate_parameters) if candidate_parameters else None
+    optimizer_candidate_parameters = normalize_parameters(dict(candidate.get("parameters") or {}))
+    optimizer_candidate_source = "optimizer"
+    optimizer_headroom_adjusted = False
+    if optimizer_candidate_parameters:
+        optimizer_candidate_parameters, optimizer_headroom_adjusted = enforce_take_profit_headroom(
+            optimizer_candidate_parameters,
+            config,
+        )
+        if optimizer_headroom_adjusted:
+            optimizer_candidate_source = "optimizer_headroom_guard"
+    optimizer_candidate_signature = (
+        parameter_signature(optimizer_candidate_parameters)
+        if optimizer_candidate_parameters
+        else None
+    )
+    headroom_candidate_parameters = build_headroom_guard_candidate(
+        config,
+        current_parameters=current_parameters,
+        strategy_diagnostics=strategy_diagnostics,
+    )
+    headroom_candidate_signature = (
+        parameter_signature(headroom_candidate_parameters)
+        if headroom_candidate_parameters
+        else None
+    )
 
     enabled = parse_bool(_env_value("SCALPER_AUTO_TUNE_ENABLED"), default=True)
     min_trades = int(_env_value("SCALPER_AUTO_TUNE_MIN_TRADES", "8"))
@@ -52,41 +77,67 @@ def tune_parameters(
     analysis_trade_count = int(((analysis_payload or {}).get("summary") or {}).get("trade_count", 0))
     delta_vs_baseline_rub = Decimal(str(recommendation.get("delta_vs_baseline_rub", "0")))
 
-    reasons: list[str] = []
+    common_reasons: list[str] = []
     if config.mode != "paper":
-        reasons.append("mode_not_paper")
+        common_reasons.append("mode_not_paper")
     if not enabled:
-        reasons.append("autotune_disabled")
+        common_reasons.append("autotune_disabled")
     if _entry_window_open(config):
-        reasons.append("entry_window_open")
+        common_reasons.append("entry_window_open")
     if open_positions > 0:
-        reasons.append("open_positions_present")
+        common_reasons.append("open_positions_present")
+    if apply and not env_file.exists():
+        common_reasons.append("missing_env_file")
+
+    optimizer_reasons: list[str] = []
     if analysis_payload is None:
-        reasons.append("missing_analysis_report")
+        optimizer_reasons.append("missing_analysis_report")
     elif analysis_payload.get("status") != "ok":
-        reasons.append(f"analysis_{analysis_payload.get('status', 'unknown')}")
+        optimizer_reasons.append(f"analysis_{analysis_payload.get('status', 'unknown')}")
     elif analysis_trade_count < min_trades:
-        reasons.append("insufficient_trade_sample")
+        optimizer_reasons.append("insufficient_trade_sample")
     if optimizer_payload is None:
-        reasons.append("missing_optimizer_report")
+        optimizer_reasons.append("missing_optimizer_report")
     elif optimizer_payload.get("status") != "ok":
-        reasons.append(f"optimizer_{optimizer_payload.get('status', 'unknown')}")
+        optimizer_reasons.append(f"optimizer_{optimizer_payload.get('status', 'unknown')}")
     elif not recommendation.get("eligible", False):
-        reasons.append(f"optimizer_{recommendation.get('reason', 'not_eligible')}")
-    if not candidate_parameters:
-        reasons.append("missing_candidate_parameters")
+        optimizer_reasons.append(f"optimizer_{recommendation.get('reason', 'not_eligible')}")
+    if not optimizer_candidate_parameters:
+        optimizer_reasons.append("missing_candidate_parameters")
+    elif optimizer_candidate_signature == current_signature:
+        optimizer_reasons.append("candidate_already_applied")
+    if delta_vs_baseline_rub < min_delta_rub:
+        optimizer_reasons.append("delta_below_threshold")
+
+    selected_candidate_parameters: dict[str, str] | None = None
+    candidate_source: str | None = None
+    if not optimizer_reasons and optimizer_candidate_parameters:
+        selected_candidate_parameters = optimizer_candidate_parameters
+        candidate_source = optimizer_candidate_source
+    elif headroom_candidate_parameters:
+        selected_candidate_parameters = headroom_candidate_parameters
+        candidate_source = "headroom_guard"
+
+    candidate_signature = (
+        parameter_signature(selected_candidate_parameters)
+        if selected_candidate_parameters
+        else None
+    )
+    reasons = list(common_reasons)
+    if selected_candidate_parameters is None:
+        reasons.extend(optimizer_reasons)
     elif candidate_signature == current_signature:
         reasons.append("candidate_already_applied")
-    if delta_vs_baseline_rub < min_delta_rub:
-        reasons.append("delta_below_threshold")
-    if apply and not env_file.exists():
-        reasons.append("missing_env_file")
 
     applied = apply and not reasons
-    changed_keys = changed_parameter_keys(current_parameters, candidate_parameters) if candidate_parameters else []
+    changed_keys = (
+        changed_parameter_keys(current_parameters, selected_candidate_parameters)
+        if selected_candidate_parameters
+        else []
+    )
     updated_parameters = dict(current_parameters)
     if applied:
-        updated_parameters = normalize_parameters(candidate_parameters)
+        updated_parameters = normalize_parameters(selected_candidate_parameters)
         update_env_file(env_file, parameter_env_updates(updated_parameters))
 
     payload = {
@@ -102,10 +153,19 @@ def tune_parameters(
         "open_positions": open_positions,
         "current_signature": current_signature,
         "candidate_signature": candidate_signature,
+        "candidate_source": candidate_source,
         "current_parameters": current_parameters,
-        "candidate_parameters": normalize_parameters(candidate_parameters) if candidate_parameters else None,
+        "candidate_parameters": normalize_parameters(selected_candidate_parameters) if selected_candidate_parameters else None,
         "parameters_after": updated_parameters,
         "changed_keys": changed_keys,
+        "strategy_diagnostics": strategy_diagnostics,
+        "headroom_guard": {
+            "needed": not bool(strategy_diagnostics.get("target_headroom_met", True)),
+            "target_net_take_profit_buffer_bps": str(config.target_net_take_profit_buffer_bps),
+            "recommended_take_profit_bps": str(get_recommended_take_profit_bps(config)),
+            "candidate_signature": headroom_candidate_signature,
+            "candidate_parameters": headroom_candidate_parameters,
+        },
         "analysis": {
             "status": (analysis_payload or {}).get("status"),
             "assessment": (analysis_payload or {}).get("assessment"),
@@ -122,6 +182,9 @@ def tune_parameters(
             "equity_delta_rub": candidate.get("equity_delta_rub"),
             "profit_factor": candidate.get("profit_factor"),
             "delta_vs_baseline_rub": str(delta_vs_baseline_rub),
+            "candidate_source": optimizer_candidate_source if optimizer_candidate_parameters else None,
+            "headroom_adjusted": optimizer_headroom_adjusted,
+            "candidate_signature": optimizer_candidate_signature,
         },
         "next_action": build_next_action(apply=apply, applied=applied, reasons=reasons),
         "service_restart_required": applied,
@@ -177,6 +240,44 @@ def parameter_env_updates(parameters: dict[str, Any]) -> dict[str, str]:
         for param_key, env_key in PARAMETER_ENV_MAP.items()
         if param_key in normalized
     }
+
+
+def build_headroom_guard_candidate(
+    config: ScalperConfig,
+    *,
+    current_parameters: dict[str, Any],
+    strategy_diagnostics: dict[str, Any],
+) -> dict[str, str] | None:
+    if bool(strategy_diagnostics.get("target_headroom_met", True)):
+        return None
+    candidate = normalize_parameters(current_parameters)
+    candidate["take_profit_bps"] = str(get_recommended_take_profit_bps(config))
+    if parameter_signature(candidate) == parameter_signature(current_parameters):
+        return None
+    return candidate
+
+
+def enforce_take_profit_headroom(
+    parameters: dict[str, Any],
+    config: ScalperConfig,
+) -> tuple[dict[str, str], bool]:
+    normalized = normalize_parameters(parameters)
+    if not normalized:
+        return normalized, False
+
+    current_take_profit_bps = Decimal(normalized.get("take_profit_bps", str(config.take_profit_bps)))
+    min_net_take_profit_bps = Decimal(
+        normalized.get("min_net_take_profit_bps", str(config.min_net_take_profit_bps))
+    )
+    recommended_take_profit_bps = get_recommended_take_profit_bps(
+        config,
+        min_net_take_profit_bps=min_net_take_profit_bps,
+    )
+    if current_take_profit_bps >= recommended_take_profit_bps:
+        return normalized, False
+
+    normalized["take_profit_bps"] = str(recommended_take_profit_bps)
+    return normalized, True
 
 
 def update_env_file(path: Path, updates: dict[str, str]) -> None:
