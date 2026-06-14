@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "moex-scalper-suite"
+version = "0.1.0"
+description = "Latency probe and moderate MOEX scalper for T-Bank Invest API."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "t-tech-investments==1.49.1",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

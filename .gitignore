@@ -1,0 +1,8 @@
+.env
+.venv/
+.tmp_sdk/
+__pycache__/
+*.pyc
+reports/
+runtime/
+*.tar.gz
