@@ -130,7 +130,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="moex_scalper",
         description="Moderate scalper for high-liquidity MOEX stocks via T-Bank Invest API.",
     )
-    parser.add_argument("command", choices=("doctor", "run", "dashboard", "optimize", "analyze"))
+    parser.add_argument("command", choices=("doctor", "run", "dashboard", "optimize", "analyze", "tune"))
     parser.add_argument("--mode", choices=("paper", "live"), default=os.getenv("SCALPER_MODE", "paper"))
     parser.add_argument("--watchlist", default=os.getenv("SCALPER_WATCHLIST", "SBER,GAZP,LKOH,VTBR"))
     parser.add_argument("--run-seconds", type=float, default=float(os.getenv("SCALPER_RUN_DURATION_SECONDS", "0")))
@@ -141,6 +141,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top", type=int, default=10)
     parser.add_argument("--days", type=int, default=int(os.getenv("SCALPER_OPTIMIZER_DAYS", "5")))
     parser.add_argument("--min-trades", type=int, default=int(os.getenv("SCALPER_OPTIMIZER_MIN_TRADES", "5")))
+    parser.add_argument("--apply", action="store_true")
     parser.add_argument("--write-report", action="store_true")
     return parser
 

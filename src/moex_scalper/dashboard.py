@@ -236,6 +236,17 @@ HTML = """<!doctype html>
 
     <div class="layout">
       <div class="panel">
+        <h2>Current Strategy</h2>
+        <div id="strategyWrap"></div>
+      </div>
+      <div class="panel">
+        <h2>Auto Tune</h2>
+        <div id="tuningWrap"></div>
+      </div>
+    </div>
+
+    <div class="layout">
+      <div class="panel">
         <h2>Trade Analysis</h2>
         <div id="analysisSummaryWrap"></div>
       </div>
@@ -328,6 +339,45 @@ HTML = """<!doctype html>
       );
     };
 
+    const renderStrategy = (parameters) => {
+      if (!parameters) return '<div class="empty">Нет strategy-params</div>';
+      return renderTable(
+        ["Param", "Value"],
+        [
+          ["Max Spread", parameters.max_spread_bps ?? "—"],
+          ["Min Imbalance", parameters.min_imbalance ?? "—"],
+          ["Min Impulse", parameters.min_impulse_bps ?? "—"],
+          ["Take Profit", parameters.take_profit_bps ?? "—"],
+          ["Stop Loss", parameters.stop_loss_bps ?? "—"],
+          ["Time Stop", parameters.time_stop_seconds ?? "—"],
+          ["Expected Edge", parameters.min_expected_edge_bps ?? "—"],
+          ["Cooldown", parameters.cooldown_seconds ?? "—"],
+        ],
+      );
+    };
+
+    const renderTuning = (tuning) => {
+      if (!tuning) return '<div class="empty">Пока нет tuning-report</div>';
+      return renderTable(
+        ["Metric", "Value"],
+        [
+          ["Enabled", String(tuning.enabled)],
+          ["Apply Requested", String(tuning.apply_requested)],
+          ["Applied", String(tuning.applied)],
+          ["Decision", tuning.decision || "—"],
+          ["Next Action", tuning.next_action || "—"],
+          ["Reasons", (tuning.reasons || []).join(", ") || "—"],
+          ["Open Positions", fmtNum(tuning.open_positions, 0)],
+          ["Analysis Trades", fmtNum(tuning.analysis?.trade_count || 0, 0)],
+          ["Analysis Assessment", tuning.analysis?.assessment || "—"],
+          ["Optimizer Reason", tuning.optimizer?.reason || "—"],
+          ["Delta vs Baseline", fmtRub(tuning.optimizer?.delta_vs_baseline_rub)],
+          ["Changed Keys", (tuning.changed_keys || []).join(", ") || "—"],
+          ["Updated", tuning.generated_at || "—"],
+        ],
+      );
+    };
+
     const renderAnalysisSummary = (analysis) => {
       if (!analysis || !analysis.summary) return '<div class="empty">Пока нет analysis-report</div>';
       const summary = analysis.summary;
@@ -384,6 +434,7 @@ HTML = """<!doctype html>
         const optimizerTop = state.optimizer?.top?.[0] || null;
         const optimizerBaseline = state.optimizer?.baseline || null;
         const optimizerRecommendation = state.optimizer?.recommendation || null;
+        const tuning = state.tuning || null;
         const analysis = state.analysis || null;
 
         document.getElementById("statusText").textContent = "online";
@@ -455,6 +506,8 @@ HTML = """<!doctype html>
           : "";
         document.getElementById("optimizerTopWrap").innerHTML = recommendationLine + renderOptimizer(optimizerTop);
         document.getElementById("optimizerBaselineWrap").innerHTML = renderOptimizer(optimizerBaseline);
+        document.getElementById("strategyWrap").innerHTML = renderStrategy(state.strategy_parameters || null);
+        document.getElementById("tuningWrap").innerHTML = renderTuning(tuning);
         document.getElementById("analysisSummaryWrap").innerHTML = renderAnalysisSummary(analysis);
         document.getElementById("analysisFocusWrap").innerHTML = renderFocus(analysis);
         document.getElementById("analysisTickerWrap").innerHTML = renderBreakdown(analysis?.by_ticker, "Ticker");
@@ -478,6 +531,7 @@ def _default_payload() -> dict[str, object]:
         "mode": "paper",
         "watchlist": [],
         "position_sizing_mode": None,
+        "strategy_parameters": None,
         "entry_schedule": {
             "timezone": None,
             "weekdays": [],
@@ -496,6 +550,7 @@ def _default_payload() -> dict[str, object]:
             "top": [],
             "baseline": None,
         },
+        "tuning": None,
         "analysis": None,
         "portfolio": {
             "initial_cash_rub": None,
@@ -515,6 +570,7 @@ def serve_dashboard(*, host: str, port: int, runtime_dir: Path) -> None:
     runtime_dir.mkdir(parents=True, exist_ok=True)
     state_path = runtime_dir / "dashboard_state.json"
     optimizer_path = runtime_dir / "optimizer" / "latest.json"
+    tuning_path = runtime_dir / "tuning" / "latest.json"
     analysis_path = runtime_dir / "analysis" / "latest.json"
 
     class Handler(BaseHTTPRequestHandler):
@@ -541,6 +597,11 @@ def serve_dashboard(*, host: str, port: int, runtime_dir: Path) -> None:
                         payload["optimizer"] = json.loads(optimizer_path.read_text(encoding="utf-8"))
                     except json.JSONDecodeError:
                         payload["optimizer"] = {"top": [], "baseline": None}
+                if tuning_path.exists():
+                    try:
+                        payload["tuning"] = json.loads(tuning_path.read_text(encoding="utf-8"))
+                    except json.JSONDecodeError:
+                        payload["tuning"] = None
                 if analysis_path.exists():
                     try:
                         payload["analysis"] = json.loads(analysis_path.read_text(encoding="utf-8"))

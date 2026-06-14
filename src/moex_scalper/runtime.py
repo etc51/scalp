@@ -22,6 +22,7 @@ from .persistence import PaperRuntimeStore, restore_runtime_entities
 from .risk import RiskManager
 from .strategy import ModerateScalpingStrategy
 from .tbank import open_client, resolve_instruments, stream_orderbooks, validate_account
+from .tuning import current_strategy_parameters
 
 
 LOGGER = logging.getLogger("moex_scalper")
@@ -364,6 +365,7 @@ class ScalperRuntime:
             "mode": self.config.mode,
             "watchlist": list(self.config.watchlist),
             "position_sizing_mode": self.config.position_sizing_mode,
+            "strategy_parameters": current_strategy_parameters(self.config),
             "entry_schedule": {
                 "timezone": self.config.timezone_name,
                 "weekdays": list(self.config.entry_weekdays),

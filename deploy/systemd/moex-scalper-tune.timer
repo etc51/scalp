@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly paper autotune for MOEX scalper
+
+[Timer]
+OnCalendar=Mon..Fri 18:14:00
+Persistent=true
+Unit=moex-scalper-tune.service
+
+[Install]
+WantedBy=timers.target

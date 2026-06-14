@@ -262,6 +262,7 @@ sudo systemctl start moex-scalper-update.service
 - `stats/daily/YYYY-MM-DD.json` — дневная статистика по сделкам
 - `dashboard_state.json` — текущее состояние для внешнего dashboard
 - `analysis/latest.json` — nightly trade-analysis по реальным paper-сделкам
+- `tuning/latest.json` — последнее решение safe autotune по параметрам стратегии
 
 Это позволяет:
 
@@ -321,3 +322,32 @@ python3 -m moex_scalper analyze --days 5 --write-report
 - ручной запуск: `sudo systemctl start moex-scalper-analyze.service`
 - автоматический таймер: `moex-scalper-analyze.timer`
 - по умолчанию таймер срабатывает в `18:06 MSK` по `понедельник-пятница`
+
+## Safe Paper Autotune
+
+Теперь поверх `analysis` и `optimizer` есть еще один слой: safe autotune только для `paper`-режима.
+
+Команда:
+
+```bash
+python3 -m moex_scalper tune --apply --write-report
+```
+
+Что делает:
+
+- читает `runtime/analysis/latest.json` и `runtime/optimizer/latest.json`
+- проверяет, что мы все еще в `paper`-режиме
+- не меняет параметры, если идет торговое окно новых входов
+- не меняет параметры, если в `paper_session.json` есть открытые позиции
+- требует достаточный sample по сделкам
+- если candidate из optimizer реально пригоден, обновляет параметры стратегии в `.env`
+- пишет решение в `runtime/tuning/latest.json` и историю в `runtime/tuning/history.jsonl`
+- после успешного apply перезапускает только `paper`-сервис бота
+
+На сервере это можно запускать и вручную, и автоматически:
+
+- ручной запуск: `sudo systemctl start moex-scalper-tune.service`
+- автоматический таймер: `moex-scalper-tune.timer`
+- по умолчанию таймер срабатывает в `18:14 MSK` по `понедельник-пятница`
+
+Это влияет только на новые входы после рестарта. Уже сохраненные открытые `paper`-позиции продолжают жить со своими параметрами, записанными в session-state.

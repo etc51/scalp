@@ -1,0 +1,256 @@
+from __future__ import annotations
+
+import json
+from datetime import datetime
+from decimal import Decimal
+from pathlib import Path
+from typing import Any
+
+from .config import ScalperConfig, parse_bool
+
+
+PARAMETER_ENV_MAP: dict[str, str] = {
+    "max_spread_bps": "SCALPER_MAX_SPREAD_BPS",
+    "min_imbalance": "SCALPER_MIN_IMBALANCE",
+    "min_impulse_bps": "SCALPER_MIN_IMPULSE_BPS",
+    "take_profit_bps": "SCALPER_TAKE_PROFIT_BPS",
+    "stop_loss_bps": "SCALPER_STOP_LOSS_BPS",
+    "time_stop_seconds": "SCALPER_TIME_STOP_SECONDS",
+    "min_expected_edge_bps": "SCALPER_MIN_EXPECTED_EDGE_BPS",
+    "cooldown_seconds": "SCALPER_COOLDOWN_SECONDS",
+}
+
+
+def tune_parameters(
+    config: ScalperConfig,
+    *,
+    apply: bool,
+    write_report: bool,
+    env_path: str = ".env",
+) -> dict[str, Any]:
+    env_file = Path(env_path)
+    analysis_path = config.runtime_dir / "analysis" / "latest.json"
+    optimizer_path = config.runtime_dir / "optimizer" / "latest.json"
+    session_path = config.runtime_dir / "paper_session.json"
+
+    analysis_payload = _load_json(analysis_path)
+    optimizer_payload = _load_json(optimizer_path)
+    session_payload = _load_json(session_path)
+
+    current_parameters = current_strategy_parameters(config)
+    current_signature = parameter_signature(current_parameters)
+    recommendation = dict((optimizer_payload or {}).get("recommendation") or {})
+    candidate = dict(recommendation.get("candidate") or {})
+    candidate_parameters = dict(candidate.get("parameters") or {})
+    candidate_signature = parameter_signature(candidate_parameters) if candidate_parameters else None
+
+    enabled = parse_bool(_env_value("SCALPER_AUTO_TUNE_ENABLED"), default=True)
+    min_trades = int(_env_value("SCALPER_AUTO_TUNE_MIN_TRADES", "8"))
+    min_delta_rub = Decimal(_env_value("SCALPER_AUTO_TUNE_MIN_DELTA_RUB", "0"))
+    open_positions = len(list((session_payload or {}).get("positions", [])))
+    analysis_trade_count = int(((analysis_payload or {}).get("summary") or {}).get("trade_count", 0))
+    delta_vs_baseline_rub = Decimal(str(recommendation.get("delta_vs_baseline_rub", "0")))
+
+    reasons: list[str] = []
+    if config.mode != "paper":
+        reasons.append("mode_not_paper")
+    if not enabled:
+        reasons.append("autotune_disabled")
+    if _entry_window_open(config):
+        reasons.append("entry_window_open")
+    if open_positions > 0:
+        reasons.append("open_positions_present")
+    if analysis_payload is None:
+        reasons.append("missing_analysis_report")
+    elif analysis_payload.get("status") != "ok":
+        reasons.append(f"analysis_{analysis_payload.get('status', 'unknown')}")
+    elif analysis_trade_count < min_trades:
+        reasons.append("insufficient_trade_sample")
+    if optimizer_payload is None:
+        reasons.append("missing_optimizer_report")
+    elif optimizer_payload.get("status") != "ok":
+        reasons.append(f"optimizer_{optimizer_payload.get('status', 'unknown')}")
+    elif not recommendation.get("eligible", False):
+        reasons.append(f"optimizer_{recommendation.get('reason', 'not_eligible')}")
+    if not candidate_parameters:
+        reasons.append("missing_candidate_parameters")
+    elif candidate_signature == current_signature:
+        reasons.append("candidate_already_applied")
+    if delta_vs_baseline_rub < min_delta_rub:
+        reasons.append("delta_below_threshold")
+    if apply and not env_file.exists():
+        reasons.append("missing_env_file")
+
+    applied = apply and not reasons
+    changed_keys = changed_parameter_keys(current_parameters, candidate_parameters) if candidate_parameters else []
+    updated_parameters = dict(current_parameters)
+    if applied:
+        updated_parameters = normalize_parameters(candidate_parameters)
+        update_env_file(env_file, parameter_env_updates(updated_parameters))
+
+    payload = {
+        "status": "ok",
+        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "mode": config.mode,
+        "enabled": enabled,
+        "apply_requested": apply,
+        "applied": applied,
+        "decision": build_decision(apply=apply, applied=applied, reasons=reasons),
+        "reasons": reasons,
+        "env_file": str(env_file),
+        "open_positions": open_positions,
+        "current_signature": current_signature,
+        "candidate_signature": candidate_signature,
+        "current_parameters": current_parameters,
+        "candidate_parameters": normalize_parameters(candidate_parameters) if candidate_parameters else None,
+        "parameters_after": updated_parameters,
+        "changed_keys": changed_keys,
+        "analysis": {
+            "status": (analysis_payload or {}).get("status"),
+            "assessment": (analysis_payload or {}).get("assessment"),
+            "trade_count": analysis_trade_count,
+            "net_pnl_rub": ((analysis_payload or {}).get("summary") or {}).get("net_pnl_rub"),
+            "profit_factor": ((analysis_payload or {}).get("summary") or {}).get("profit_factor"),
+            "window": (analysis_payload or {}).get("window"),
+        },
+        "optimizer": {
+            "status": (optimizer_payload or {}).get("status"),
+            "reason": recommendation.get("reason"),
+            "eligible": recommendation.get("eligible", False),
+            "trade_count": candidate.get("trade_count"),
+            "equity_delta_rub": candidate.get("equity_delta_rub"),
+            "profit_factor": candidate.get("profit_factor"),
+            "delta_vs_baseline_rub": str(delta_vs_baseline_rub),
+        },
+        "next_action": build_next_action(apply=apply, applied=applied, reasons=reasons),
+        "service_restart_required": applied,
+    }
+    if write_report or applied:
+        write_tuning_report(config.runtime_dir, payload)
+    return payload
+
+
+def current_strategy_parameters(config: ScalperConfig) -> dict[str, str]:
+    return normalize_parameters(
+        {
+            "max_spread_bps": config.max_spread_bps,
+            "min_imbalance": config.min_imbalance,
+            "min_impulse_bps": config.min_impulse_bps,
+            "take_profit_bps": config.take_profit_bps,
+            "stop_loss_bps": config.stop_loss_bps,
+            "time_stop_seconds": config.time_stop_seconds,
+            "min_expected_edge_bps": config.min_expected_edge_bps,
+            "cooldown_seconds": config.cooldown_seconds,
+        }
+    )
+
+
+def normalize_parameters(parameters: dict[str, Any]) -> dict[str, str]:
+    normalized: dict[str, str] = {}
+    for key in PARAMETER_ENV_MAP:
+        if key in parameters:
+            normalized[key] = str(parameters[key])
+    return normalized
+
+
+def parameter_signature(parameters: dict[str, Any]) -> str:
+    normalized = normalize_parameters(parameters)
+    return "|".join(normalized.get(key, "") for key in PARAMETER_ENV_MAP)
+
+
+def changed_parameter_keys(current_parameters: dict[str, Any], candidate_parameters: dict[str, Any]) -> list[str]:
+    current = normalize_parameters(current_parameters)
+    candidate = normalize_parameters(candidate_parameters)
+    return [
+        key
+        for key in PARAMETER_ENV_MAP
+        if key in candidate and current.get(key) != candidate.get(key)
+    ]
+
+
+def parameter_env_updates(parameters: dict[str, Any]) -> dict[str, str]:
+    normalized = normalize_parameters(parameters)
+    return {
+        env_key: normalized[param_key]
+        for param_key, env_key in PARAMETER_ENV_MAP.items()
+        if param_key in normalized
+    }
+
+
+def update_env_file(path: Path, updates: dict[str, str]) -> None:
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    seen: set[str] = set()
+    output: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in line:
+            output.append(line)
+            continue
+        key, _ = line.split("=", 1)
+        normalized_key = key.strip()
+        if normalized_key in updates:
+            output.append(f"{normalized_key}={updates[normalized_key]}")
+            seen.add(normalized_key)
+        else:
+            output.append(line)
+
+    for key, value in updates.items():
+        if key not in seen:
+            output.append(f"{key}={value}")
+
+    path.write_text("\n".join(output) + "\n", encoding="utf-8")
+
+
+def build_decision(*, apply: bool, applied: bool, reasons: list[str]) -> str:
+    if applied:
+        return "applied"
+    if apply and reasons:
+        return "skipped"
+    if not apply and not reasons:
+        return "ready_to_apply"
+    return "preview_skipped"
+
+
+def build_next_action(*, apply: bool, applied: bool, reasons: list[str]) -> str:
+    if applied:
+        return "restart_paper_service"
+    if "insufficient_trade_sample" in reasons:
+        return "collect_more_paper_trades"
+    if any(reason.startswith("optimizer_") for reason in reasons):
+        return "wait_for_better_optimizer_candidate"
+    if "open_positions_present" in reasons:
+        return "wait_for_positions_to_close"
+    if "entry_window_open" in reasons:
+        return "retry_outside_entry_window"
+    if not apply and not reasons:
+        return "candidate_ready_for_apply"
+    return "no_change"
+
+
+def write_tuning_report(runtime_dir: Path, payload: dict[str, Any]) -> None:
+    tuning_dir = runtime_dir / "tuning"
+    tuning_dir.mkdir(parents=True, exist_ok=True)
+    latest_path = tuning_dir / "latest.json"
+    history_path = tuning_dir / "history.jsonl"
+    body = json.dumps(payload, ensure_ascii=False, indent=2)
+    latest_path.write_text(body, encoding="utf-8")
+    with history_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+
+def _load_json(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _env_value(key: str, default: str | None = None) -> str | None:
+    return __import__("os").getenv(key, default)
+
+
+def _entry_window_open(config: ScalperConfig) -> bool:
+    local_now = datetime.now(config.timezone)
+    if local_now.weekday() not in config.entry_weekdays:
+        return False
+    current_time = local_now.time().replace(tzinfo=None)
+    return config.entry_start_time <= current_time <= config.entry_end_time
