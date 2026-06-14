@@ -10,6 +10,7 @@ from .commission import CommissionModel
 from .config import ScalperConfig, build_parser, load_config, load_dotenv
 from .dashboard import serve_dashboard
 from .optimizer import optimize_parameters
+from .restrictions import build_restrictions
 from .runtime import ScalperRuntime
 from .tbank import open_client, resolve_instruments, validate_account
 from .tuning import tune_parameters
@@ -96,6 +97,15 @@ def main() -> int:
     if args.command == "watchdog":
         payload = run_watchdog(
             config,
+            write_report=args.write_report,
+        )
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "restrict":
+        payload = build_restrictions(
+            config,
+            apply=args.apply,
             write_report=args.write_report,
         )
         print(json.dumps(payload, ensure_ascii=False, indent=2))

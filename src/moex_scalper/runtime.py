@@ -19,6 +19,7 @@ from .domain import ClosedTrade, MarketSnapshot, Position, Side
 from .execution import LiveExecutor, PaperExecutor
 from .market_history import MarketSnapshotRecorder
 from .persistence import PaperRuntimeStore, restore_runtime_entities
+from .restrictions import load_active_restrictions, restriction_reason, serialize_restrictions
 from .risk import RiskManager
 from .strategy import ModerateScalpingStrategy
 from .tbank import open_client, resolve_instruments, stream_orderbooks, validate_account
@@ -68,6 +69,7 @@ class ScalperRuntime:
         self._last_state_write_at: datetime | None = None
         self.paper_store = PaperRuntimeStore(config.runtime_dir)
         self.snapshot_recorder = MarketSnapshotRecorder(config.runtime_dir, config.timezone)
+        self.active_restrictions = load_active_restrictions(config.runtime_dir)
 
     async def run(self) -> None:
         setup_logging(self.config.runtime_dir)
@@ -85,6 +87,11 @@ class ScalperRuntime:
             ",".join(str(day) for day in self.config.entry_weekdays),
             self.config.entry_start_time.isoformat(timespec="minutes"),
             self.config.entry_end_time.isoformat(timespec="minutes"),
+        )
+        LOGGER.info(
+            "Active restrictions tickers=%s hours=%s",
+            ",".join(self.active_restrictions.disabled_tickers) or "none",
+            ",".join(str(hour) for hour in self.active_restrictions.blocked_entry_hours) or "none",
         )
 
         async with open_client(self.config) as services:
@@ -177,6 +184,15 @@ class ScalperRuntime:
         entry_allowed, entry_reason = self.risk.entry_allowed_at(snapshot.at)
         if not entry_allowed:
             self.state.blocked_reasons[entry_reason] += 1
+            return
+        local_hour = snapshot.at.astimezone(self.config.timezone).hour
+        restriction = restriction_reason(
+            self.active_restrictions,
+            ticker=snapshot.instrument.ticker,
+            local_hour=local_hour,
+        )
+        if restriction is not None:
+            self.state.blocked_reasons[restriction] += 1
             return
 
         signal, block_reason, metrics = self.strategy.diagnose_entry(
@@ -366,6 +382,7 @@ class ScalperRuntime:
             "watchlist": list(self.config.watchlist),
             "position_sizing_mode": self.config.position_sizing_mode,
             "strategy_parameters": current_strategy_parameters(self.config),
+            "active_restrictions": serialize_restrictions(self.active_restrictions),
             "entry_schedule": {
                 "timezone": self.config.timezone_name,
                 "weekdays": list(self.config.entry_weekdays),

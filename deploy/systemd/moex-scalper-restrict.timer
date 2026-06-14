@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly paper restrictions apply for MOEX scalper
+
+[Timer]
+OnCalendar=Mon..Fri 18:18:00
+Persistent=true
+Unit=moex-scalper-restrict.service
+
+[Install]
+WantedBy=timers.target

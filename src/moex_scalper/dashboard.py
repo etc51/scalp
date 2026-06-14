@@ -247,27 +247,31 @@ HTML = """<!doctype html>
 
     <div class="layout">
       <div class="panel">
+        <h2>Entry Restrictions</h2>
+        <div id="restrictionsWrap"></div>
+      </div>
+      <div class="panel">
         <h2>Auto Tune</h2>
         <div id="tuningWrap"></div>
       </div>
+    </div>
+
+    <div class="layout">
       <div class="panel">
         <h2>Trade Analysis</h2>
         <div id="analysisSummaryWrap"></div>
       </div>
-    </div>
-
-    <div class="layout">
       <div class="panel">
         <h2>Analysis Focus</h2>
         <div id="analysisFocusWrap"></div>
       </div>
+    </div>
+
+    <div class="layout">
       <div class="panel">
         <h2>Ticker Breakdown</h2>
         <div id="analysisTickerWrap"></div>
       </div>
-    </div>
-
-    <div class="layout">
       <div class="panel">
         <h2>Hour Breakdown</h2>
         <div id="analysisHourWrap"></div>
@@ -407,6 +411,37 @@ HTML = """<!doctype html>
       );
     };
 
+    const renderRestrictions = (restrictions, activeRestrictions) => {
+      const active = restrictions?.active_restrictions || activeRestrictions || {};
+      const proposed = restrictions?.proposed_restrictions || {};
+      const activeTickers = active.disabled_tickers || [];
+      const activeHours = active.blocked_entry_hours || [];
+      const proposedTickers = proposed.disabled_tickers || [];
+      const proposedHours = proposed.blocked_entry_hours || [];
+      if (!restrictions && !activeTickers.length && !activeHours.length) {
+        return '<div class="empty">Пока нет restrictions-report</div>';
+      }
+      return renderTable(
+        ["Metric", "Value"],
+        [
+          ["Enabled", restrictions ? String(restrictions.enabled) : "—"],
+          ["Apply Requested", restrictions ? String(restrictions.apply_requested) : "—"],
+          ["Applied", restrictions ? String(restrictions.applied) : "—"],
+          ["Decision", restrictions?.decision || "—"],
+          ["Next Action", restrictions?.next_action || "—"],
+          ["Reasons", (restrictions?.reasons || []).join(", ") || "—"],
+          ["Active Tickers", activeTickers.join(", ") || "—"],
+          ["Active Hours", activeHours.map((hour) => `${hour}:00`).join(", ") || "—"],
+          ["Proposed Tickers", proposedTickers.join(", ") || "—"],
+          ["Proposed Hours", proposedHours.map((hour) => `${hour}:00`).join(", ") || "—"],
+          ["Clears Existing", restrictions ? String(restrictions.clears_existing_restrictions) : "—"],
+          ["Analysis Trades", fmtNum(restrictions?.analysis?.trade_count || 0, 0)],
+          ["Analysis Assessment", restrictions?.analysis?.assessment || "—"],
+          ["Updated", restrictions?.generated_at || active.updated_at || "—"],
+        ],
+      );
+    };
+
     const renderAnalysisSummary = (analysis) => {
       if (!analysis || !analysis.summary) return '<div class="empty">Пока нет analysis-report</div>';
       const summary = analysis.summary;
@@ -465,6 +500,8 @@ HTML = """<!doctype html>
         const optimizerRecommendation = state.optimizer?.recommendation || null;
         const watchdog = state.watchdog || null;
         const tuning = state.tuning || null;
+        const restrictions = state.restrictions || null;
+        const activeRestrictions = state.active_restrictions || null;
         const analysis = state.analysis || null;
 
         document.getElementById("statusText").textContent = "online";
@@ -538,6 +575,7 @@ HTML = """<!doctype html>
         document.getElementById("optimizerBaselineWrap").innerHTML = renderOptimizer(optimizerBaseline);
         document.getElementById("watchdogWrap").innerHTML = renderWatchdog(watchdog);
         document.getElementById("strategyWrap").innerHTML = renderStrategy(state.strategy_parameters || null);
+        document.getElementById("restrictionsWrap").innerHTML = renderRestrictions(restrictions, activeRestrictions);
         document.getElementById("tuningWrap").innerHTML = renderTuning(tuning);
         document.getElementById("analysisSummaryWrap").innerHTML = renderAnalysisSummary(analysis);
         document.getElementById("analysisFocusWrap").innerHTML = renderFocus(analysis);
@@ -563,6 +601,12 @@ def _default_payload() -> dict[str, object]:
         "watchlist": [],
         "position_sizing_mode": None,
         "strategy_parameters": None,
+        "active_restrictions": {
+            "disabled_tickers": [],
+            "blocked_entry_hours": [],
+            "updated_at": None,
+            "source": None,
+        },
         "entry_schedule": {
             "timezone": None,
             "weekdays": [],
@@ -583,6 +627,7 @@ def _default_payload() -> dict[str, object]:
         },
         "watchdog": None,
         "tuning": None,
+        "restrictions": None,
         "analysis": None,
         "portfolio": {
             "initial_cash_rub": None,
@@ -604,6 +649,7 @@ def serve_dashboard(*, host: str, port: int, runtime_dir: Path) -> None:
     optimizer_path = runtime_dir / "optimizer" / "latest.json"
     watchdog_path = runtime_dir / "watchdog" / "latest.json"
     tuning_path = runtime_dir / "tuning" / "latest.json"
+    restrictions_path = runtime_dir / "restrictions" / "latest.json"
     analysis_path = runtime_dir / "analysis" / "latest.json"
 
     class Handler(BaseHTTPRequestHandler):
@@ -640,6 +686,11 @@ def serve_dashboard(*, host: str, port: int, runtime_dir: Path) -> None:
                         payload["tuning"] = json.loads(tuning_path.read_text(encoding="utf-8"))
                     except json.JSONDecodeError:
                         payload["tuning"] = None
+                if restrictions_path.exists():
+                    try:
+                        payload["restrictions"] = json.loads(restrictions_path.read_text(encoding="utf-8"))
+                    except json.JSONDecodeError:
+                        payload["restrictions"] = None
                 if analysis_path.exists():
                     try:
                         payload["analysis"] = json.loads(analysis_path.read_text(encoding="utf-8"))
