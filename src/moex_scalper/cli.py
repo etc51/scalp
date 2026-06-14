@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 
 from .commission import CommissionModel
 from .config import ScalperConfig, build_parser, load_config, load_dotenv
+from .dashboard import serve_dashboard
 from .runtime import ScalperRuntime
 from .tbank import open_client, resolve_instruments, validate_account
 
@@ -43,6 +45,12 @@ def main() -> int:
     load_dotenv(Path(".env"))
     parser = build_parser()
     args = parser.parse_args()
+
+    if args.command == "dashboard":
+        runtime_dir = Path(os.getenv("SCALPER_RUNTIME_DIR", "runtime"))
+        serve_dashboard(host=args.host, port=args.port, runtime_dir=runtime_dir)
+        return 0
+
     config = load_config(args)
 
     if args.command == "doctor":

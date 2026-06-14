@@ -1,0 +1,381 @@
+from __future__ import annotations
+
+import json
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import urlparse
+
+
+HTML = """<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MOEX Scalper Dashboard</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #08131a;
+      --panel: #0f202a;
+      --panel-2: #142d3a;
+      --line: #264556;
+      --text: #e8f0f4;
+      --muted: #8ba5b3;
+      --good: #51d88a;
+      --bad: #ff6b6b;
+      --accent: #47c7ff;
+      --warn: #ffc857;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background:
+        radial-gradient(circle at top right, rgba(71,199,255,.16), transparent 28%),
+        linear-gradient(180deg, #071017 0%, #0a1821 100%);
+      color: var(--text);
+    }
+    .wrap {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: flex-end;
+      margin-bottom: 20px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 30px;
+      letter-spacing: 0.02em;
+    }
+    .sub {
+      color: var(--muted);
+      margin-top: 6px;
+    }
+    .status {
+      padding: 10px 14px;
+      border: 1px solid var(--line);
+      background: rgba(15,32,42,.72);
+      border-radius: 14px;
+      min-width: 250px;
+      text-align: right;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 14px;
+      margin-bottom: 18px;
+    }
+    .card, .panel {
+      border: 1px solid var(--line);
+      background: linear-gradient(180deg, rgba(15,32,42,.88), rgba(20,45,58,.86));
+      border-radius: 18px;
+      box-shadow: 0 18px 50px rgba(0,0,0,.22);
+    }
+    .card {
+      padding: 16px;
+      min-height: 108px;
+    }
+    .label {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+    }
+    .value {
+      font-size: 28px;
+      margin-top: 12px;
+      font-weight: 700;
+    }
+    .good { color: var(--good); }
+    .bad { color: var(--bad); }
+    .warn { color: var(--warn); }
+    .layout {
+      display: grid;
+      grid-template-columns: 1.3fr 1fr;
+      gap: 18px;
+      margin-bottom: 18px;
+    }
+    .panel {
+      padding: 16px;
+    }
+    h2 {
+      margin: 0 0 12px;
+      font-size: 18px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    th, td {
+      padding: 10px 8px;
+      border-bottom: 1px solid rgba(38,69,86,.7);
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+    }
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .chip {
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(8,19,26,.7);
+      font-size: 13px;
+    }
+    .empty {
+      color: var(--muted);
+      padding: 10px 0 4px;
+    }
+    @media (max-width: 1180px) {
+      .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .layout { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 760px) {
+      .wrap { padding: 14px; }
+      .topbar { display: block; }
+      .status { text-align: left; margin-top: 12px; }
+      .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .value { font-size: 22px; }
+      table { display: block; overflow-x: auto; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <div>
+        <h1>MOEX Scalper Dashboard</h1>
+        <div class="sub" id="subline">Ожидание первого состояния...</div>
+      </div>
+      <div class="status">
+        <div class="label">Состояние</div>
+        <div id="statusText">connecting</div>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card"><div class="label">Mode</div><div class="value" id="mode">-</div></div>
+      <div class="card"><div class="label">Cash</div><div class="value" id="cash">-</div></div>
+      <div class="card"><div class="label">Market Value</div><div class="value" id="marketValue">-</div></div>
+      <div class="card"><div class="label">Equity</div><div class="value" id="equity">-</div></div>
+      <div class="card"><div class="label">Realized PnL</div><div class="value" id="realized">-</div></div>
+      <div class="card"><div class="label">Unrealized PnL</div><div class="value" id="unrealized">-</div></div>
+    </div>
+
+    <div class="layout">
+      <div class="panel">
+        <h2>Open Positions</h2>
+        <div id="positionsWrap"></div>
+      </div>
+      <div class="panel">
+        <h2>Market Watch</h2>
+        <div id="marketWrap"></div>
+      </div>
+    </div>
+
+    <div class="layout">
+      <div class="panel">
+        <h2>Recent Trades</h2>
+        <div id="tradesWrap"></div>
+      </div>
+      <div class="panel">
+        <h2>Blocked Reasons</h2>
+        <div class="chips" id="blockedWrap"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const fmtRub = (value) => {
+      if (value === null || value === undefined || value === "") return "—";
+      const num = Number(value);
+      return num.toLocaleString("ru-RU", { minimumFractionDigits: 0, maximumFractionDigits: 2 }) + " RUB";
+    };
+
+    const fmtNum = (value, digits = 2) => {
+      if (value === null || value === undefined || value === "") return "—";
+      return Number(value).toLocaleString("ru-RU", { minimumFractionDigits: 0, maximumFractionDigits: digits });
+    };
+
+    const pnlClass = (value) => {
+      const num = Number(value || 0);
+      if (num > 0) return "good";
+      if (num < 0) return "bad";
+      return "";
+    };
+
+    const renderTable = (headers, rows) => {
+      if (!rows.length) return '<div class="empty">Пока пусто</div>';
+      const thead = headers.map((h) => `<th>${h}</th>`).join("");
+      const tbody = rows.map((row) => `<tr>${row.map((cell) => `<td>${cell}</td>`).join("")}</tr>`).join("");
+      return `<table><thead><tr>${thead}</tr></thead><tbody>${tbody}</tbody></table>`;
+    };
+
+    async function refresh() {
+      try {
+        const response = await fetch("/api/state?ts=" + Date.now(), { cache: "no-store" });
+        const state = await response.json();
+
+        document.getElementById("statusText").textContent = "online";
+        document.getElementById("mode").textContent = `${state.mode || "-"} / ${state.position_sizing_mode || "-"}`;
+        document.getElementById("cash").textContent = fmtRub(state.portfolio?.cash_rub);
+        document.getElementById("marketValue").textContent = fmtRub(state.portfolio?.market_value_rub);
+        document.getElementById("equity").textContent = fmtRub(state.portfolio?.equity_rub);
+
+        const realizedEl = document.getElementById("realized");
+        realizedEl.textContent = fmtRub(state.realized_pnl_rub);
+        realizedEl.className = "value " + pnlClass(state.realized_pnl_rub);
+
+        const unrealizedEl = document.getElementById("unrealized");
+        unrealizedEl.textContent = fmtRub(state.portfolio?.unrealized_pnl_rub);
+        unrealizedEl.className = "value " + pnlClass(state.portfolio?.unrealized_pnl_rub);
+
+        document.getElementById("subline").textContent =
+          `watchlist: ${(state.watchlist || []).join(", ")} | updated: ${state.updated_at || "—"} | snapshots: ${state.snapshots_processed || 0} | signals: ${state.signals_detected || 0}`;
+
+        document.getElementById("positionsWrap").innerHTML = renderTable(
+          ["Ticker", "Qty", "Entry", "Current Bid", "Entry Fee", "Opened"],
+          (state.positions || []).map((item) => [
+            item.ticker,
+            fmtNum(item.quantity_lots, 0),
+            fmtNum(item.entry_price, 4),
+            fmtNum(item.current_bid, 4),
+            fmtRub(item.entry_fee_rub),
+            item.opened_at,
+          ]),
+        );
+
+        document.getElementById("tradesWrap").innerHTML = renderTable(
+          ["Ticker", "Qty", "Entry", "Exit", "Fees", "Net PnL", "Exit Reason"],
+          (state.trades_today || []).slice().reverse().map((item) => [
+            item.ticker,
+            fmtNum(item.quantity_lots, 0),
+            fmtNum(item.entry_price, 4),
+            fmtNum(item.exit_price, 4),
+            fmtRub(item.fees_rub),
+            `<span class="${pnlClass(item.net_pnl_rub)}">${fmtRub(item.net_pnl_rub)}</span>`,
+            item.exit_reason,
+          ]),
+        );
+
+        document.getElementById("marketWrap").innerHTML = renderTable(
+          ["Ticker", "Bid", "Ask", "Spread bps", "Imbalance", "Time"],
+          (state.market || []).map((item) => [
+            item.ticker,
+            fmtNum(item.bid_price, 4),
+            fmtNum(item.ask_price, 4),
+            fmtNum(item.spread_bps, 2),
+            fmtNum(item.imbalance, 3),
+            item.at,
+          ]),
+        );
+
+        const blocked = state.blocked_reasons || {};
+        const blockedEntries = Object.entries(blocked).sort((a, b) => b[1] - a[1]);
+        document.getElementById("blockedWrap").innerHTML = blockedEntries.length
+          ? blockedEntries.map(([reason, count]) => `<div class="chip">${reason}: ${count}</div>`).join("")
+          : '<div class="empty">Нет блокировок</div>';
+      } catch (error) {
+        document.getElementById("statusText").textContent = "waiting for state";
+      }
+    }
+
+    refresh();
+    setInterval(refresh, 2000);
+  </script>
+</body>
+</html>
+"""
+
+
+def _default_payload() -> dict[str, object]:
+    return {
+        "updated_at": None,
+        "mode": "paper",
+        "watchlist": [],
+        "position_sizing_mode": None,
+        "snapshots_processed": 0,
+        "signals_detected": 0,
+        "realized_pnl_rub": "0",
+        "blocked_reasons": {},
+        "portfolio": {
+            "initial_cash_rub": None,
+            "cash_rub": None,
+            "market_value_rub": None,
+            "unrealized_pnl_rub": None,
+            "equity_rub": None,
+            "deployment_pct": None,
+        },
+        "positions": [],
+        "trades_today": [],
+        "market": [],
+    }
+
+
+def serve_dashboard(*, host: str, port: int, runtime_dir: Path) -> None:
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    state_path = runtime_dir / "dashboard_state.json"
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            path = urlparse(self.path).path
+            if path in {"/", "/index.html"}:
+                body = HTML.encode("utf-8")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+
+            if path == "/api/state":
+                payload = _default_payload()
+                if state_path.exists():
+                    try:
+                        payload = json.loads(state_path.read_text(encoding="utf-8"))
+                    except json.JSONDecodeError:
+                        payload = _default_payload()
+                body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+
+            if path == "/health":
+                body = b'{"ok":true}'
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+
+            self.send_error(HTTPStatus.NOT_FOUND)
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+            return
+
+    server = ThreadingHTTPServer((host, port), Handler)
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()

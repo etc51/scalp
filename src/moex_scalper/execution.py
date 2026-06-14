@@ -27,12 +27,92 @@ def utc_now() -> datetime:
 @dataclass(slots=True)
 class PaperExecutor:
     commission_model: CommissionModel
+    initial_cash_rub: Decimal = Decimal("300000")
+    cash_rub: Decimal = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.cash_rub = self.initial_cash_rub
+
+    @property
+    def available_cash_rub(self) -> Decimal:
+        return self.cash_rub
+
+    def plan_entry(
+        self,
+        snapshot: MarketSnapshot,
+        *,
+        open_positions: int,
+        max_open_positions: int,
+        default_quantity_lots: int,
+        max_position_notional_rub: Decimal,
+        position_sizing_mode: str,
+    ) -> tuple[int, Decimal, str]:
+        if position_sizing_mode == "fixed_lots":
+            quantity_lots = default_quantity_lots
+        else:
+            remaining_slots = max(1, max_open_positions - open_positions)
+            target_budget = self.cash_rub
+            if position_sizing_mode == "equal_weight_cash":
+                target_budget = self.cash_rub / Decimal(remaining_slots)
+            target_budget = min(target_budget, max_position_notional_rub)
+            quantity_lots = self._max_affordable_lots(snapshot, target_budget)
+
+        if quantity_lots <= 0:
+            return 0, Decimal("0"), "insufficient_cash"
+
+        entry_notional = snapshot.buy_notional_rub * Decimal(quantity_lots)
+        total_cost = entry_notional + self.commission_model.fee_rub(entry_notional)
+        if total_cost > self.cash_rub:
+            quantity_lots = self._max_affordable_lots(snapshot, self.cash_rub)
+            if quantity_lots <= 0:
+                return 0, Decimal("0"), "insufficient_cash"
+            entry_notional = snapshot.buy_notional_rub * Decimal(quantity_lots)
+
+        return quantity_lots, entry_notional, "ok"
 
     async def execute_entry(self, snapshot: MarketSnapshot, quantity_lots: int) -> ExecutionReport:
-        return self._build_report(snapshot, quantity_lots, Side.BUY, snapshot.ask_price)
+        report = self._build_report(snapshot, quantity_lots, Side.BUY, snapshot.ask_price)
+        total_cost = report.fill_price * Decimal(snapshot.instrument.lot_size) * Decimal(quantity_lots) + report.fee_rub
+        self.cash_rub -= total_cost
+        report.metadata["cash_after_rub"] = str(self.cash_rub)
+        return report
 
     async def execute_exit(self, snapshot: MarketSnapshot, quantity_lots: int) -> ExecutionReport:
-        return self._build_report(snapshot, quantity_lots, Side.SELL, snapshot.bid_price)
+        report = self._build_report(snapshot, quantity_lots, Side.SELL, snapshot.bid_price)
+        proceeds = report.fill_price * Decimal(snapshot.instrument.lot_size) * Decimal(quantity_lots)
+        self.cash_rub += proceeds - report.fee_rub
+        report.metadata["cash_after_rub"] = str(self.cash_rub)
+        return report
+
+    def market_value_rub(self, positions: list[Any], latest_prices: dict[str, Decimal]) -> Decimal:
+        total = Decimal("0")
+        for position in positions:
+            price = latest_prices.get(position.instrument.instrument_id, position.entry_price)
+            total += price * Decimal(position.instrument.lot_size) * Decimal(position.quantity_lots)
+        return total
+
+    def unrealized_pnl_rub(self, positions: list[Any], latest_prices: dict[str, Decimal]) -> Decimal:
+        total = Decimal("0")
+        for position in positions:
+            price = latest_prices.get(position.instrument.instrument_id, position.entry_price)
+            total += (
+                (price - position.entry_price)
+                * Decimal(position.instrument.lot_size)
+                * Decimal(position.quantity_lots)
+            )
+        return total
+
+    def equity_rub(self, positions: list[Any], latest_prices: dict[str, Decimal]) -> Decimal:
+        return self.cash_rub + self.market_value_rub(positions, latest_prices)
+
+    def _max_affordable_lots(self, snapshot: MarketSnapshot, budget_rub: Decimal) -> int:
+        lot_notional = snapshot.buy_notional_rub
+        if lot_notional <= 0 or budget_rub <= 0:
+            return 0
+        total_per_lot = lot_notional + self.commission_model.fee_rub(lot_notional)
+        if total_per_lot <= 0:
+            return 0
+        return int(budget_rub / total_per_lot)
 
     def _build_report(
         self,

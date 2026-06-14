@@ -34,6 +34,9 @@ python3 -m compileall src >/dev/null
 
 bash scripts/install_server_services.sh "$PROJECT_DIR" "$(id -un)" "$(id -gn)" >/dev/null
 sudo systemctl restart "$SERVICE_NAME"
+if sudo systemctl list-unit-files moex-scalper-dashboard.service >/dev/null 2>&1; then
+  sudo systemctl restart moex-scalper-dashboard.service
+fi
 
 NEW_REV="$(git rev-parse HEAD)"
 echo "Updated $CURRENT_REV -> $NEW_REV and restarted $SERVICE_NAME"

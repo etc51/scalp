@@ -54,6 +54,8 @@ class ScalperConfig:
     stop_loss_bps: Decimal
     min_expected_edge_bps: Decimal
     premium_share_commission_bps: Decimal
+    paper_initial_cash_rub: Decimal
+    position_sizing_mode: str
     allow_short: bool
     max_open_positions: int
     run_duration_seconds: float
@@ -65,10 +67,12 @@ def build_parser() -> argparse.ArgumentParser:
         prog="moex_scalper",
         description="Moderate scalper for high-liquidity MOEX stocks via T-Bank Invest API.",
     )
-    parser.add_argument("command", choices=("doctor", "run"))
+    parser.add_argument("command", choices=("doctor", "run", "dashboard"))
     parser.add_argument("--mode", choices=("paper", "live"), default=os.getenv("SCALPER_MODE", "paper"))
     parser.add_argument("--watchlist", default=os.getenv("SCALPER_WATCHLIST", "SBER,GAZP,LKOH,VTBR"))
     parser.add_argument("--run-seconds", type=float, default=float(os.getenv("SCALPER_RUN_DURATION_SECONDS", "0")))
+    parser.add_argument("--host", default=os.getenv("SCALPER_DASHBOARD_HOST", "0.0.0.0"))
+    parser.add_argument("--port", type=int, default=int(os.getenv("SCALPER_DASHBOARD_PORT", "8080")))
     return parser
 
 
@@ -79,6 +83,8 @@ def load_config(args: argparse.Namespace) -> ScalperConfig:
         raise SystemExit("TBANK_TOKEN is required.")
     if args.mode == "live" and not account_id:
         raise SystemExit("TBANK_ACCOUNT_ID is required for live mode.")
+
+    default_max_open_positions = "4" if args.mode == "paper" else "1"
 
     return ScalperConfig(
         token=token,
@@ -103,8 +109,10 @@ def load_config(args: argparse.Namespace) -> ScalperConfig:
         premium_share_commission_bps=Decimal(
             os.getenv("SCALPER_PREMIUM_SHARE_COMMISSION_BPS", str(DEFAULT_PREMIUM_SHARE_COMMISSION_BPS))
         ),
+        paper_initial_cash_rub=Decimal(os.getenv("SCALPER_PAPER_INITIAL_CASH_RUB", "300000")),
+        position_sizing_mode=os.getenv("SCALPER_POSITION_SIZING_MODE", "equal_weight_cash").strip().lower(),
         allow_short=parse_bool(os.getenv("SCALPER_ALLOW_SHORT"), default=False),
-        max_open_positions=max(1, int(os.getenv("SCALPER_MAX_OPEN_POSITIONS", "1"))),
+        max_open_positions=max(1, int(os.getenv("SCALPER_MAX_OPEN_POSITIONS", default_max_open_positions))),
         run_duration_seconds=max(0.0, float(args.run_seconds)),
         runtime_dir=Path(os.getenv("SCALPER_RUNTIME_DIR", "runtime")),
     )

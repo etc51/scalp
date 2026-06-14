@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from .config import ScalperConfig
-from .domain import ClosedTrade, MarketSnapshot, Position
+from .domain import ClosedTrade, MarketSnapshot
 
 
 def trading_day_key(moment: datetime) -> str:
@@ -26,14 +26,20 @@ class RiskManager:
             self.realized_pnl_rub = Decimal("0")
             self.cooldown_until.clear()
 
-    def can_open(self, snapshot: MarketSnapshot, open_positions: int) -> tuple[bool, str]:
+    def can_open(
+        self,
+        snapshot: MarketSnapshot,
+        *,
+        open_positions: int,
+        planned_notional_rub: Decimal,
+    ) -> tuple[bool, str]:
         self._roll_day(snapshot.at)
 
         if open_positions >= self.config.max_open_positions:
             return False, "max_open_positions"
         if self.realized_pnl_rub <= -self.config.daily_loss_limit_rub:
             return False, "daily_loss_limit"
-        if snapshot.buy_notional_rub > self.config.max_position_notional_rub:
+        if planned_notional_rub > self.config.max_position_notional_rub:
             return False, "max_position_notional"
         cooldown_until = self.cooldown_until.get(snapshot.instrument.instrument_id)
         if cooldown_until and snapshot.at < cooldown_until:
