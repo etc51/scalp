@@ -3,12 +3,43 @@ from __future__ import annotations
 import json
 import math
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 from .config import ScalperConfig
 from .market_history import load_snapshots_from_paths
-from .optimizer import filter_snapshots_for_entry_window, resolve_snapshot_files
+from .optimizer import filter_snapshots_for_entry_window, resolve_snapshot_files, simulate_candidate
+
+
+REGIME_PREVIEW_MIN_TRADES = 3
+REGIME_FILTERS: list[dict[str, str]] = [
+    {
+        "name": "baseline",
+        "description": "Без regime-filter.",
+        "mode": "baseline",
+    },
+    {
+        "name": "non_bearish_prev_minute",
+        "description": "Разрешать вход только если предыдущая 1m-свеча не bearish.",
+        "mode": "trend_not_bearish",
+    },
+    {
+        "name": "bullish_prev_minute",
+        "description": "Разрешать вход только если предыдущая 1m-свеча bullish.",
+        "mode": "trend_bullish",
+    },
+    {
+        "name": "positive_macd_prev_minute",
+        "description": "Разрешать вход только если MACD histogram предыдущей 1m-свечи положительный.",
+        "mode": "macd_positive",
+    },
+    {
+        "name": "rsi_50_70_prev_minute",
+        "description": "Разрешать вход только если RSI14 предыдущей 1m-свечи в диапазоне 50-70.",
+        "mode": "rsi_50_70",
+    },
+]
 
 
 def build_indicator_research(
@@ -67,6 +98,7 @@ def build_indicator_research(
     frame = pd.DataFrame(
         [
             {
+                "snapshot_key": build_snapshot_key(snapshot),
                 "at": snapshot.at.astimezone(config.timezone),
                 "ticker": snapshot.instrument.ticker,
                 "mid_price": float(snapshot.mid_price),
@@ -100,54 +132,16 @@ def build_indicator_research(
         pandas_ta = None
 
     ticker_reports: list[dict[str, Any]] = []
+    enriched_parts: list[Any] = []
     for ticker in sorted(frame["ticker"].unique()):
         ticker_frame = frame.loc[frame["ticker"] == ticker].copy()
-        minute = (
-            ticker_frame.set_index("at")
-            .resample("1min")
-            .agg(
-                open=("mid_price", "first"),
-                high=("mid_price", "max"),
-                low=("mid_price", "min"),
-                close=("mid_price", "last"),
-                average_spread_bps=("spread_bps", "mean"),
-                average_imbalance=("imbalance", "mean"),
-                snapshot_count=("mid_price", "count"),
-            )
-            .dropna(subset=["close"])
+        minute = build_minute_indicator_frame(
+            ticker_frame,
+            pandas_ta=pandas_ta,
+            pd_module=pd,
         )
         if minute.empty:
             continue
-
-        close = minute["close"]
-        minute["return_bps"] = close.pct_change() * 10000
-        minute["ema9"] = close.ewm(span=9, adjust=False).mean()
-        minute["ema21"] = close.ewm(span=21, adjust=False).mean()
-
-        if pandas_ta is not None:
-            minute["rsi14"] = pandas_ta.rsi(close, length=14)
-            macd = pandas_ta.macd(close, fast=12, slow=26, signal=9)
-            if macd is not None and not macd.empty:
-                minute["macd"] = macd.iloc[:, 0]
-                minute["macd_signal"] = macd.iloc[:, 1]
-                minute["macd_hist"] = macd.iloc[:, 2]
-            else:
-                minute["macd"] = math.nan
-                minute["macd_signal"] = math.nan
-                minute["macd_hist"] = math.nan
-        else:
-            delta = close.diff()
-            gains = delta.clip(lower=0)
-            losses = -delta.clip(upper=0)
-            avg_gain = gains.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
-            avg_loss = losses.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
-            rs = avg_gain / avg_loss.replace(0, pd.NA)
-            minute["rsi14"] = 100 - (100 / (1 + rs))
-            ema12 = close.ewm(span=12, adjust=False).mean()
-            ema26 = close.ewm(span=26, adjust=False).mean()
-            minute["macd"] = ema12 - ema26
-            minute["macd_signal"] = minute["macd"].ewm(span=9, adjust=False).mean()
-            minute["macd_hist"] = minute["macd"] - minute["macd_signal"]
 
         first_open = float(minute["open"].iloc[0])
         last_close = float(minute["close"].iloc[-1])
@@ -192,10 +186,30 @@ def build_indicator_research(
                 ),
             }
         )
+        enriched_parts.append(
+            enrich_snapshot_frame_with_regime(
+                ticker_frame,
+                minute,
+                pd_module=pd,
+            )
+        )
 
     ticker_reports.sort(key=lambda item: item["ticker"])
-    summary = build_research_summary(ticker_reports, snapshot_count=len(snapshots))
-    focus = build_research_focus(ticker_reports)
+    regime_replay = build_regime_replay(
+        config,
+        snapshots,
+        enriched_parts=enriched_parts,
+        top_n=top_n,
+    )
+    summary = build_research_summary(
+        ticker_reports,
+        snapshot_count=len(snapshots),
+        regime_replay=regime_replay,
+    )
+    focus = build_research_focus(
+        ticker_reports,
+        regime_replay=regime_replay,
+    )
     payload = {
         "status": "ok",
         "generated_at": datetime.utcnow().isoformat() + "Z",
@@ -207,6 +221,7 @@ def build_indicator_research(
         "timeframe": "1min",
         "summary": summary,
         "focus": focus,
+        "regime_replay": regime_replay,
         "tickers": ticker_reports[: max(1, top_n)],
         "all_tickers_count": len(ticker_reports),
     }
@@ -214,10 +229,22 @@ def build_indicator_research(
     return payload
 
 
-def build_research_summary(tickers: list[dict[str, Any]], *, snapshot_count: int) -> dict[str, Any]:
+def build_research_summary(
+    tickers: list[dict[str, Any]],
+    *,
+    snapshot_count: int,
+    regime_replay: dict[str, Any] | None,
+) -> dict[str, Any]:
     bullish = sum(1 for item in tickers if item["trend_label"] == "bullish")
     bearish = sum(1 for item in tickers if item["trend_label"] == "bearish")
     neutral = sum(1 for item in tickers if item["trend_label"] == "neutral")
+    recommendation = ((regime_replay or {}).get("recommendation") or {}) if regime_replay else {}
+    best_regime = recommendation.get("candidate")
+    if best_regime is None and regime_replay:
+        best_regime = next(
+            (item for item in list((regime_replay or {}).get("top") or []) if item.get("name") != "baseline"),
+            None,
+        )
     return {
         "ticker_count": len(tickers),
         "snapshot_count": snapshot_count,
@@ -230,10 +257,16 @@ def build_research_summary(tickers: list[dict[str, Any]], *, snapshot_count: int
         "highest_rsi_ticker": _best_by(tickers, "rsi14", reverse=True),
         "lowest_rsi_ticker": _best_by(tickers, "rsi14", reverse=False),
         "highest_volatility_ticker": _best_by(tickers, "realized_volatility_bps", reverse=True),
+        "best_regime_candidate": best_regime,
+        "regime_recommendation": recommendation if regime_replay else None,
     }
 
 
-def build_research_focus(tickers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def build_research_focus(
+    tickers: list[dict[str, Any]],
+    *,
+    regime_replay: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
     if not tickers:
         return []
     focus: list[dict[str, Any]] = []
@@ -247,6 +280,28 @@ def build_research_focus(tickers: list[dict[str, Any]]) -> list[dict[str, Any]]:
             {
                 "type": "strongest_return",
                 "message": f"Лучшая intraday-динамика у {strongest['ticker']}: {strongest['session_return_bps']:.2f} bps.",
+            }
+        )
+    recommendation = ((regime_replay or {}).get("recommendation") or {}) if regime_replay else {}
+    candidate = dict(recommendation.get("candidate") or {})
+    if recommendation.get("eligible") and candidate:
+        focus.append(
+            {
+                "type": "regime_candidate",
+                "message": (
+                    f"Лучший regime-filter preview: {candidate['name']} "
+                    f"({candidate['delta_vs_baseline_rub']} RUB vs baseline)."
+                ),
+            }
+        )
+    elif candidate and candidate.get("delta_vs_baseline_rub") not in {None, "0"}:
+        focus.append(
+            {
+                "type": "regime_preview",
+                "message": (
+                    f"Regime preview лидирует {candidate['name']}, но sample пока мал: "
+                    f"{candidate['delta_vs_baseline_rub']} RUB vs baseline."
+                ),
             }
         )
     if weakest is not None:
@@ -270,7 +325,228 @@ def build_research_focus(tickers: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "message": f"Максимальный RSI14 сейчас у {highest_rsi['ticker']}: {highest_rsi['rsi14']:.1f}.",
             }
         )
-    return focus[:4]
+    return focus[:5]
+
+
+def build_minute_indicator_frame(
+    ticker_frame: Any,
+    *,
+    pandas_ta: Any,
+    pd_module: Any,
+) -> Any:
+    minute = (
+        ticker_frame.set_index("at")
+        .resample("1min")
+        .agg(
+            open=("mid_price", "first"),
+            high=("mid_price", "max"),
+            low=("mid_price", "min"),
+            close=("mid_price", "last"),
+            average_spread_bps=("spread_bps", "mean"),
+            average_imbalance=("imbalance", "mean"),
+            snapshot_count=("mid_price", "count"),
+        )
+        .dropna(subset=["close"])
+    )
+    if minute.empty:
+        return minute
+
+    close = minute["close"]
+    minute["return_bps"] = close.pct_change() * 10000
+    minute["ema9"] = close.ewm(span=9, adjust=False).mean()
+    minute["ema21"] = close.ewm(span=21, adjust=False).mean()
+
+    if pandas_ta is not None:
+        minute["rsi14"] = pandas_ta.rsi(close, length=14)
+        macd = pandas_ta.macd(close, fast=12, slow=26, signal=9)
+        if macd is not None and not macd.empty:
+            minute["macd"] = macd.iloc[:, 0]
+            minute["macd_signal"] = macd.iloc[:, 1]
+            minute["macd_hist"] = macd.iloc[:, 2]
+        else:
+            minute["macd"] = math.nan
+            minute["macd_signal"] = math.nan
+            minute["macd_hist"] = math.nan
+    else:
+        delta = close.diff()
+        gains = delta.clip(lower=0)
+        losses = -delta.clip(upper=0)
+        avg_gain = gains.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
+        avg_loss = losses.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
+        rs = avg_gain / avg_loss.replace(0, pd_module.NA)
+        minute["rsi14"] = 100 - (100 / (1 + rs))
+        ema12 = close.ewm(span=12, adjust=False).mean()
+        ema26 = close.ewm(span=26, adjust=False).mean()
+        minute["macd"] = ema12 - ema26
+        minute["macd_signal"] = minute["macd"].ewm(span=9, adjust=False).mean()
+        minute["macd_hist"] = minute["macd"] - minute["macd_signal"]
+
+    minute["ema_gap_bps"] = (
+        ((minute["ema9"] / minute["ema21"]) - 1) * 10000
+    ).where(minute["ema21"] != 0)
+    minute["trend_label"] = minute.apply(
+        lambda row: classify_trend(
+            rsi14=_coerce_float(row.get("rsi14")),
+            ema_gap_bps=_coerce_float(row.get("ema_gap_bps")),
+            macd_hist=_coerce_float(row.get("macd_hist")),
+        ),
+        axis=1,
+    )
+    return minute
+
+
+def enrich_snapshot_frame_with_regime(
+    ticker_frame: Any,
+    minute: Any,
+    *,
+    pd_module: Any,
+) -> Any:
+    indicator_frame = minute.reset_index()[["at", "trend_label", "rsi14", "ema_gap_bps", "macd_hist"]].copy()
+    indicator_frame["minute_at"] = indicator_frame["at"] + pd_module.Timedelta(minutes=1)
+    indicator_frame = indicator_frame.drop(columns=["at"])
+
+    enriched = ticker_frame.copy()
+    enriched["minute_at"] = enriched["at"].dt.floor("min")
+    return enriched.merge(indicator_frame, on="minute_at", how="left")
+
+
+def build_regime_replay(
+    config: ScalperConfig,
+    snapshots: list[Any],
+    *,
+    enriched_parts: list[Any],
+    top_n: int,
+) -> dict[str, Any]:
+    if not enriched_parts:
+        return {
+            "status": "no_indicator_frame",
+            "candidate_count": 0,
+            "baseline": None,
+            "top": [],
+            "recommendation": {
+                "eligible": False,
+                "reason": "no_indicator_frame",
+                "candidate": None,
+            },
+        }
+
+    enriched = enriched_parts[0] if len(enriched_parts) == 1 else __import__("pandas").concat(enriched_parts, ignore_index=True)
+    regime_lookup = {
+        str(row["snapshot_key"]): {
+            "trend_label": row["trend_label"],
+            "rsi14": _coerce_float(row["rsi14"]),
+            "ema_gap_bps": _coerce_float(row["ema_gap_bps"]),
+            "macd_hist": _coerce_float(row["macd_hist"]),
+        }
+        for _, row in enriched.iterrows()
+    }
+
+    results: list[dict[str, Any]] = []
+    baseline_result: dict[str, Any] | None = None
+    for candidate in REGIME_FILTERS:
+        if candidate["mode"] == "baseline":
+            raw = simulate_candidate(config, snapshots)
+        else:
+            raw = simulate_candidate(
+                config,
+                snapshots,
+                entry_filter=make_regime_gate(candidate, regime_lookup),
+            )
+        item = summarize_regime_candidate(candidate, raw)
+        if candidate["mode"] == "baseline":
+            baseline_result = item
+        results.append(item)
+
+    baseline_net = Decimal(str((baseline_result or {}).get("net_pnl_rub", "0")))
+    for item in results:
+        item["delta_vs_baseline_rub"] = str(Decimal(str(item["net_pnl_rub"])) - baseline_net)
+
+    ranked = sorted(results, key=regime_sort_key, reverse=True)
+    recommendation = build_regime_recommendation(ranked, baseline=baseline_result)
+    return {
+        "status": "ok",
+        "candidate_count": len(results),
+        "baseline": baseline_result,
+        "top": ranked[: max(1, top_n)],
+        "recommendation": recommendation,
+    }
+
+
+def make_regime_gate(candidate: dict[str, str], regime_lookup: dict[str, dict[str, Any]]):
+    mode = candidate["mode"]
+    reason_prefix = candidate["name"]
+
+    def gate(snapshot: Any, _signal: Any) -> tuple[bool, str | None]:
+        state = regime_lookup.get(build_snapshot_key(snapshot))
+        if state is None:
+            return False, f"regime_{reason_prefix}_missing"
+        if state.get("trend_label") is None and state.get("rsi14") is None and state.get("macd_hist") is None:
+            return False, f"regime_{reason_prefix}_warmup"
+        if mode == "trend_not_bearish":
+            return (state.get("trend_label") != "bearish", f"regime_{reason_prefix}_bearish")
+        if mode == "trend_bullish":
+            return (state.get("trend_label") == "bullish", f"regime_{reason_prefix}_not_bullish")
+        if mode == "macd_positive":
+            macd_hist = state.get("macd_hist")
+            return (macd_hist is not None and macd_hist > 0, f"regime_{reason_prefix}_macd_non_positive")
+        if mode == "rsi_50_70":
+            rsi14 = state.get("rsi14")
+            return (
+                rsi14 is not None and 50 <= rsi14 <= 70,
+                f"regime_{reason_prefix}_rsi_out_of_band",
+            )
+        return True, None
+
+    return gate
+
+
+def summarize_regime_candidate(candidate: dict[str, str], raw: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": candidate["name"],
+        "description": candidate["description"],
+        "trade_count": int(raw.get("trade_count", 0)),
+        "wins": int(raw.get("wins", 0)),
+        "losses": int(raw.get("losses", 0)),
+        "win_rate_pct": raw.get("win_rate_pct"),
+        "signals_detected": int(raw.get("signals_detected", 0)),
+        "filtered_signal_count": int(raw.get("filtered_signal_count", 0)),
+        "net_pnl_rub": raw.get("net_pnl_rub"),
+        "equity_delta_rub": raw.get("equity_delta_rub"),
+        "profit_factor": raw.get("profit_factor"),
+        "expectancy_bps": raw.get("expectancy_bps"),
+        "average_trade_rub": raw.get("average_trade_rub"),
+        "max_drawdown_rub": raw.get("max_drawdown_rub"),
+        "blocked_top": dict(raw.get("blocked_top") or {}),
+        "score": raw.get("score"),
+    }
+
+
+def regime_sort_key(item: dict[str, Any]) -> tuple[Decimal, Decimal, Decimal, int]:
+    return (
+        Decimal(str(item.get("score", "0"))),
+        Decimal(str(item.get("net_pnl_rub", "0"))),
+        Decimal(str(item.get("profit_factor", "0"))),
+        int(item.get("trade_count", 0)),
+    )
+
+
+def build_regime_recommendation(
+    ranked: list[dict[str, Any]],
+    *,
+    baseline: dict[str, Any] | None,
+) -> dict[str, Any]:
+    non_baseline = [item for item in ranked if item.get("name") != "baseline"]
+    if not non_baseline:
+        return {"eligible": False, "reason": "no_candidates", "candidate": None}
+    top = non_baseline[0]
+    delta = Decimal(str(top.get("delta_vs_baseline_rub", "0")))
+    if int(top.get("trade_count", 0)) < REGIME_PREVIEW_MIN_TRADES:
+        return {"eligible": False, "reason": "insufficient_trade_sample", "candidate": top}
+    if baseline is None:
+        return {"eligible": False, "reason": "missing_baseline", "candidate": top}
+    if delta <= 0:
+        return {"eligible": False, "reason": "no_positive_delta_vs_baseline", "candidate": top}
+    return {"eligible": True, "reason": "best_positive_regime_filter", "candidate": top}
 
 
 def classify_trend(*, rsi14: float | None, ema_gap_bps: float | None, macd_hist: float | None) -> str:
@@ -316,3 +592,28 @@ def _best_by(items: list[dict[str, Any]], key: str, *, reverse: bool) -> dict[st
     if not candidates:
         return None
     return sorted(candidates, key=lambda item: float(item[key]), reverse=reverse)[0]
+
+
+def build_snapshot_key(snapshot: Any) -> str:
+    return "|".join(
+        [
+            snapshot.instrument.instrument_id,
+            snapshot.at.isoformat(),
+            str(snapshot.bid_price),
+            str(snapshot.ask_price),
+            str(snapshot.bid_quantity),
+            str(snapshot.ask_quantity),
+        ]
+    )
+
+
+def _coerce_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(numeric) or math.isinf(numeric):
+        return None
+    return numeric

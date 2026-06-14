@@ -295,7 +295,7 @@ HTML = """<!doctype html>
         <div id="summaryFocusWrap"></div>
       </div>
       <div class="panel">
-        <h2>Research Tickers</h2>
+        <h2>Research Tickers & Replay</h2>
         <div id="researchTickerWrap"></div>
       </div>
     </div>
@@ -555,6 +555,8 @@ HTML = """<!doctype html>
     const renderResearchSummary = (research) => {
       const summary = research?.summary || null;
       if (!summary) return '<div class="empty">Пока нет research-report</div>';
+      const regimeCandidate = summary?.best_regime_candidate || null;
+      const regimeRecommendation = summary?.regime_recommendation || null;
       return renderTable(
         ["Metric", "Value"],
         [
@@ -570,6 +572,8 @@ HTML = """<!doctype html>
           ["Weakest Return", summary.weakest_return_ticker ? `${summary.weakest_return_ticker.ticker} (${fmtNum(summary.weakest_return_ticker.session_return_bps, 2)} bps)` : "—"],
           ["Highest RSI", summary.highest_rsi_ticker ? `${summary.highest_rsi_ticker.ticker} (${fmtNum(summary.highest_rsi_ticker.rsi14, 1)})` : "—"],
           ["Highest Volatility", summary.highest_volatility_ticker ? `${summary.highest_volatility_ticker.ticker} (${fmtNum(summary.highest_volatility_ticker.realized_volatility_bps, 2)} bps)` : "—"],
+          ["Best Regime Preview", regimeCandidate ? `${regimeCandidate.name} (${fmtRub(regimeCandidate.delta_vs_baseline_rub)} vs baseline)` : "—"],
+          ["Regime Recommendation", regimeRecommendation?.reason || "—"],
           ["Focus", (research?.focus || []).map((item) => item.message).join(" | ") || "—"],
         ],
       );
@@ -605,8 +609,7 @@ HTML = """<!doctype html>
 
     const renderResearchTickers = (research) => {
       const tickers = research?.tickers || [];
-      if (!tickers.length) return '<div class="empty">Пока нет ticker-research</div>';
-      return renderTable(
+      const tickerTable = tickers.length ? renderTable(
         ["Ticker", "Trend", "Return", "Range", "Vol", "RSI14", "EMA Gap", "MACD Hist", "Spread"],
         tickers.map((item) => [
           item.ticker,
@@ -619,6 +622,34 @@ HTML = """<!doctype html>
           fmtNum(item.macd_hist, 4),
           fmtNum(item.average_spread_bps, 2) + " bps",
         ]),
+      ) : '<div class="empty">Пока нет ticker-research</div>';
+      return tickerTable + `<div class="stack-gap"></div>` + renderResearchRegime(research);
+    };
+
+    const renderResearchRegime = (research) => {
+      const replay = research?.regime_replay || null;
+      const rows = replay?.top || [];
+      if (!replay || !rows.length) return '<div class="empty">Пока нет regime-replay</div>';
+      const recommendation = replay?.recommendation || null;
+      const lead = recommendation?.candidate
+        ? `<div class="empty">recommendation: ${recommendation.reason || "—"} | lead: ${recommendation.candidate.name} | delta vs baseline: ${fmtRub(recommendation.candidate.delta_vs_baseline_rub)}</div>`
+        : `<div class="empty">recommendation: ${recommendation?.reason || "—"}</div>`;
+      return (
+        `<div class="subhead">Regime Replay</div>` +
+        lead +
+        renderTable(
+          ["Filter", "Trades", "Signals", "Filtered", "Win Rate", "Net PnL", "Delta", "PF"],
+          rows.map((item) => [
+            item.name,
+            fmtNum(item.trade_count, 0),
+            fmtNum(item.signals_detected, 0),
+            fmtNum(item.filtered_signal_count, 0),
+            fmtNum(item.win_rate_pct, 2) + " %",
+            `<span class="${pnlClass(item.net_pnl_rub)}">${fmtRub(item.net_pnl_rub)}</span>`,
+            `<span class="${pnlClass(item.delta_vs_baseline_rub)}">${fmtRub(item.delta_vs_baseline_rub)}</span>`,
+            fmtNum(item.profit_factor, 2),
+          ]),
+        )
       );
     };
 

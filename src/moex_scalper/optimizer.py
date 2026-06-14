@@ -6,7 +6,7 @@ from dataclasses import replace
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .commission import CommissionModel
 from .config import ScalperConfig
@@ -437,7 +437,12 @@ def sort_key(item: dict[str, Any]) -> tuple[Decimal, Decimal, Decimal, int]:
     )
 
 
-def simulate_candidate(config: ScalperConfig, snapshots: list[MarketSnapshot]) -> dict[str, Any]:
+def simulate_candidate(
+    config: ScalperConfig,
+    snapshots: list[MarketSnapshot],
+    *,
+    entry_filter: Callable[[MarketSnapshot, Any], tuple[bool, str | None]] | None = None,
+) -> dict[str, Any]:
     strategy = ModerateScalpingStrategy(config)
     risk = RiskManager(config)
     executor = PaperExecutor(
@@ -449,6 +454,7 @@ def simulate_candidate(config: ScalperConfig, snapshots: list[MarketSnapshot]) -
     blocked: Counter[str] = Counter()
     latest_bid_by_instrument: dict[str, Decimal] = {}
     signals_detected = 0
+    filtered_signal_count = 0
     peak_equity = executor.initial_cash_rub
     max_drawdown_rub = Decimal("0")
     equity_curve: list[Decimal] = []
@@ -507,6 +513,16 @@ def simulate_candidate(config: ScalperConfig, snapshots: list[MarketSnapshot]) -
             max_drawdown_rub = max(max_drawdown_rub, peak_equity - equity)
             equity_curve.append(equity)
             continue
+        if entry_filter is not None:
+            filter_allowed, filter_reason = entry_filter(snapshot, signal)
+            if not filter_allowed:
+                filtered_signal_count += 1
+                blocked[filter_reason or "entry_filter_blocked"] += 1
+                equity = executor.equity_rub(list(positions.values()), latest_bid_by_instrument)
+                peak_equity = max(peak_equity, equity)
+                max_drawdown_rub = max(max_drawdown_rub, peak_equity - equity)
+                equity_curve.append(equity)
+                continue
 
         quantity_lots, planned_notional_rub, sizing_reason = executor.plan_entry(
             snapshot,
@@ -604,6 +620,7 @@ def simulate_candidate(config: ScalperConfig, snapshots: list[MarketSnapshot]) -
         "losses": losses,
         "win_rate_pct": round((wins / len(trades) * 100), 2) if trades else 0.0,
         "signals_detected": signals_detected,
+        "filtered_signal_count": filtered_signal_count,
         "net_pnl_rub": str(risk.realized_pnl_rub),
         "unrealized_pnl_rub": str(unrealized_pnl),
         "equity_delta_rub": str(equity_delta),

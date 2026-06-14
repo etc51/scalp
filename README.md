@@ -347,6 +347,9 @@ python3 -m moex_scalper research --days 5 --write-report
 - берет только snapshots внутри разрешенного entry-window
 - агрегирует их в `1m`-свечи по тикерам
 - считает `EMA`, `RSI14`, `MACD` и intraday volatility
+- строит regime-replay preview по тем же snapshot-данным без lookahead bias
+  - snapshot минуты `10:31` использует только индикаторы уже закрытой минуты `10:30`
+  - сравнивает baseline против нескольких long-only regime-фильтров
 - если установлен `pandas_ta`, может использовать его; иначе считает индикаторы через `pandas`
 - пишет отчет в `runtime/research/latest.json`
 
