@@ -34,6 +34,7 @@ def build_daily_summary(
         "mode": (state or {}).get("mode", config.mode),
         "updated_at": (state or {}).get("updated_at"),
         "watchlist": list((state or {}).get("watchlist") or []),
+        "strategy_diagnostics": (state or {}).get("strategy_diagnostics"),
         "today": {
             "trade_count": int(today_stats.get("trade_count", 0) or 0),
             "net_pnl_rub": today_stats.get("net_pnl_rub"),
@@ -82,6 +83,8 @@ def build_daily_summary(
             "status": (watchdog or {}).get("status"),
             "restart_required": (watchdog or {}).get("restart_required"),
             "warning_reasons": list((watchdog or {}).get("warning_reasons") or []),
+            "next_action": (watchdog or {}).get("next_action"),
+            "strategy_config": (((watchdog or {}).get("checks") or {}).get("strategy_config")),
         },
     }
     payload["focus"] = build_focus(payload)
@@ -99,9 +102,14 @@ def build_focus(payload: dict[str, Any]) -> list[str]:
     optimizer = payload.get("optimizer") or {}
     research = payload.get("research") or {}
     watchdog = payload.get("watchdog") or {}
+    strategy_diagnostics = payload.get("strategy_diagnostics") or {}
 
     if watchdog.get("status") not in {None, "healthy"}:
         focus.append(f"Watchdog status: {watchdog.get('status')}.")
+    if not strategy_diagnostics.get("viable_for_entry", True):
+        focus.append(
+            "Текущий take-profit после комиссии ниже минимального net-floor; новые входы будут блокироваться."
+        )
     if int(today.get("trade_count", 0) or 0) <= 0:
         focus.append("Сегодня нет закрытых paper-сделок.")
     if analysis.get("assessment") == "insufficient_sample":
@@ -136,9 +144,12 @@ def build_headline(payload: dict[str, Any]) -> str:
     optimizer = payload.get("optimizer") or {}
     research = payload.get("research") or {}
     watchdog = payload.get("watchdog") or {}
+    strategy_diagnostics = payload.get("strategy_diagnostics") or {}
 
     if watchdog.get("status") not in {None, "healthy"}:
         return f"Watchdog status {watchdog.get('status')}: контур требует внимания."
+    if not strategy_diagnostics.get("viable_for_entry", True):
+        return "Конфиг стратегии блокирует новые входы: нужно поднять take-profit или ослабить net-floor."
     if optimizer.get("status") == "no_entry_window_data" and research.get("status") == "no_entry_window_data":
         return "В market-history пока нет валидного in-window sample для optimizer/research."
     if int(today.get("trade_count", 0) or 0) <= 0:
@@ -157,9 +168,14 @@ def build_next_action(payload: dict[str, Any]) -> str:
     tuning = payload.get("tuning") or {}
     restrictions = payload.get("restrictions") or {}
     watchdog = payload.get("watchdog") or {}
+    strategy_diagnostics = payload.get("strategy_diagnostics") or {}
 
     if watchdog.get("restart_required"):
         return "inspect_watchdog_and_runtime"
+    if not strategy_diagnostics.get("viable_for_entry", True):
+        return "raise_take_profit_or_lower_net_floor"
+    if watchdog.get("next_action") not in {None, "none"}:
+        return str(watchdog.get("next_action"))
     if optimizer.get("status") == "no_entry_window_data" or research.get("status") == "no_entry_window_data":
         return "collect_in_window_market_data"
     if analysis.get("assessment") == "insufficient_sample":

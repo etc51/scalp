@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import ScalperConfig, parse_bool
+from .diagnostics import build_strategy_diagnostics
 
 
 def run_watchdog(
@@ -24,6 +25,7 @@ def run_watchdog(
     market_data_warmup_seconds = int(config.watchdog_market_data_warmup_seconds)
     dashboard_timeout_seconds = float(config.watchdog_timeout_seconds)
     check_dashboard_http = bool(config.watchdog_check_dashboard_http)
+    strategy_diagnostics = build_strategy_diagnostics(config)
 
     now = datetime.now(timezone.utc)
     restart_reasons: list[str] = []
@@ -89,6 +91,8 @@ def run_watchdog(
         warning_reasons.append("mode_not_paper")
     if parse_bool(_env_value("SCALPER_ALLOW_LIVE_TRADING", "0"), default=False):
         warning_reasons.append("live_guard_disabled")
+    if not strategy_diagnostics["viable_for_entry"]:
+        warning_reasons.append("strategy_config_not_viable")
 
     open_positions = len(list((session_payload or {}).get("positions", [])))
     status = "healthy"
@@ -140,8 +144,12 @@ def run_watchdog(
                 "state_mode": service_mode,
                 "allow_live_trading": parse_bool(_env_value("SCALPER_ALLOW_LIVE_TRADING", "0"), default=False),
             },
+            "strategy_config": strategy_diagnostics,
         },
-        "next_action": "restart_services" if restart_reasons else "none",
+        "next_action": _resolve_next_action(
+            restart_reasons=restart_reasons,
+            strategy_diagnostics=strategy_diagnostics,
+        ),
     }
     if write_report:
         write_watchdog_report(runtime_dir, payload)
@@ -202,3 +210,11 @@ def _market_data_required_now(now: datetime, config: ScalperConfig) -> bool:
 
 def _env_value(key: str, default: str | None = None) -> str | None:
     return __import__("os").getenv(key, default)
+
+
+def _resolve_next_action(*, restart_reasons: list[str], strategy_diagnostics: dict[str, Any]) -> str:
+    if restart_reasons:
+        return "restart_services"
+    if not strategy_diagnostics.get("viable_for_entry", True):
+        return "raise_take_profit_or_lower_net_floor"
+    return "none"

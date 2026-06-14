@@ -441,6 +441,7 @@ HTML = """<!doctype html>
       const marketCheck = watchdog.checks?.market_data || {};
       const sessionCheck = watchdog.checks?.paper_session || {};
       const httpCheck = watchdog.checks?.dashboard_http || {};
+      const strategyCheck = watchdog.checks?.strategy_config || {};
       return renderTable(
         ["Metric", "Value"],
         [
@@ -456,6 +457,10 @@ HTML = """<!doctype html>
           ["Market Data Age", marketCheck.age_seconds === null || marketCheck.age_seconds === undefined ? "—" : fmtNum(marketCheck.age_seconds, 1) + " s"],
           ["Max Market Age", marketCheck.max_age_seconds === null || marketCheck.max_age_seconds === undefined ? "—" : fmtNum(marketCheck.max_age_seconds, 0) + " s"],
           ["Dashboard HTTP", httpCheck.checked ? String(httpCheck.ok) : "skipped"],
+          ["Strategy Viable", strategyCheck.viable_for_entry === undefined ? "—" : String(strategyCheck.viable_for_entry)],
+          ["Net TP After Fees", strategyCheck.configured_net_take_profit_bps ?? "—"],
+          ["Net TP Buffer", strategyCheck.net_take_profit_buffer_bps ?? "—"],
+          ["Strategy Warnings", (strategyCheck.warnings || []).join(", ") || "—"],
           ["Open Positions", fmtNum(sessionCheck.open_positions || 0, 0)],
           ["Next Action", watchdog.next_action || "—"],
           ["Updated", watchdog.generated_at || "—"],
@@ -463,7 +468,7 @@ HTML = """<!doctype html>
       );
     };
 
-    const renderStrategy = (parameters) => {
+    const renderStrategy = (parameters, diagnostics) => {
       if (!parameters) return '<div class="empty">Нет strategy-params</div>';
       return renderTable(
         ["Param", "Value"],
@@ -476,6 +481,11 @@ HTML = """<!doctype html>
           ["Time Stop", parameters.time_stop_seconds ?? "—"],
           ["Expected Edge", parameters.min_expected_edge_bps ?? "—"],
           ["Net TP Floor", parameters.min_net_take_profit_bps ?? "—"],
+          ["Roundtrip Fee", diagnostics?.premium_roundtrip_commission_bps ?? "—"],
+          ["Net TP After Fees", diagnostics?.configured_net_take_profit_bps ?? "—"],
+          ["Net TP Buffer", diagnostics?.net_take_profit_buffer_bps ?? "—"],
+          ["Viable For Entry", diagnostics?.viable_for_entry === undefined ? "—" : String(diagnostics.viable_for_entry)],
+          ["Warnings", (diagnostics?.warnings || []).join(", ") || "—"],
           ["Cooldown", parameters.cooldown_seconds ?? "—"],
         ],
       );
@@ -786,7 +796,10 @@ HTML = """<!doctype html>
         document.getElementById("coverageSummaryWrap").innerHTML = renderCoverageSummary(coverage);
         document.getElementById("coverageBreakdownWrap").innerHTML = renderCoverageBreakdown(coverage);
         document.getElementById("watchdogWrap").innerHTML = renderWatchdog(watchdog);
-        document.getElementById("strategyWrap").innerHTML = renderStrategy(state.strategy_parameters || null);
+        document.getElementById("strategyWrap").innerHTML = renderStrategy(
+          state.strategy_parameters || null,
+          state.strategy_diagnostics || null,
+        );
         document.getElementById("restrictionsWrap").innerHTML = renderRestrictions(restrictions, activeRestrictions);
         document.getElementById("tuningWrap").innerHTML = renderTuning(tuning);
         document.getElementById("analysisSummaryWrap").innerHTML = renderAnalysisSummary(analysis);
@@ -817,6 +830,7 @@ def _default_payload() -> dict[str, object]:
         "watchlist": [],
         "position_sizing_mode": None,
         "strategy_parameters": None,
+        "strategy_diagnostics": None,
         "active_restrictions": {
             "disabled_tickers": [],
             "blocked_entry_hours": [],

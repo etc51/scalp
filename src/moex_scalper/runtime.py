@@ -15,6 +15,7 @@ from t_tech.invest.schemas import OrderStateStreamRequest
 
 from .commission import CommissionModel
 from .config import ScalperConfig
+from .diagnostics import build_strategy_diagnostics
 from .domain import ClosedTrade, MarketSnapshot, Position, Side
 from .execution import LiveExecutor, PaperExecutor
 from .market_history import MarketSnapshotRecorder
@@ -408,6 +409,7 @@ class ScalperRuntime:
             "watchlist": list(self.config.watchlist),
             "position_sizing_mode": self.config.position_sizing_mode,
             "strategy_parameters": current_strategy_parameters(self.config),
+            "strategy_diagnostics": build_strategy_diagnostics(self.config),
             "active_restrictions": serialize_restrictions(self.active_restrictions),
             "entry_schedule": {
                 "timezone": self.config.timezone_name,

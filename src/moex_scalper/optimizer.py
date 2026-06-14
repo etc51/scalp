@@ -10,6 +10,7 @@ from typing import Any, Callable
 
 from .commission import CommissionModel
 from .config import ScalperConfig
+from .diagnostics import is_strategy_config_viable
 from .domain import ClosedTrade, MarketSnapshot, Position
 from .execution import PaperExecutor
 from .market_history import load_snapshots_from_paths, snapshot_path_for_date
@@ -374,6 +375,8 @@ def build_candidate_configs(base: ScalperConfig) -> list[ScalperConfig]:
             candidate = replace(base, **{field_name: value})
             if candidate.stop_loss_bps > candidate.take_profit_bps:
                 continue
+            if not is_strategy_config_viable(candidate):
+                continue
             candidates.append(candidate)
 
     preset_overrides = [
@@ -414,6 +417,8 @@ def build_candidate_configs(base: ScalperConfig) -> list[ScalperConfig]:
     for overrides in preset_overrides:
         candidate = replace(base, **overrides)
         if candidate.stop_loss_bps > candidate.take_profit_bps:
+            continue
+        if not is_strategy_config_viable(candidate):
             continue
         candidates.append(candidate)
 

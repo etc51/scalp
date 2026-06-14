@@ -9,6 +9,7 @@ from .analysis import analyze_trades
 from .commission import CommissionModel
 from .config import ScalperConfig, build_parser, load_config, load_dotenv
 from .dashboard import serve_dashboard
+from .diagnostics import build_strategy_diagnostics
 from .optimizer import optimize_parameters
 from .research import build_indicator_research
 from .restrictions import build_restrictions
@@ -29,6 +30,7 @@ async def run_doctor(config: ScalperConfig) -> int:
         ),
         "min_expected_edge_bps": str(config.min_expected_edge_bps),
         "min_net_take_profit_bps": str(config.min_net_take_profit_bps),
+        "strategy_diagnostics": build_strategy_diagnostics(config),
     }
 
     async with open_client(config) as services:
