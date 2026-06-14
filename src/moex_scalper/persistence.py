@@ -192,6 +192,17 @@ class PaperRuntimeStore:
             _atomic_write_json(daily_path, today)
         return {"overall": overview, "today": today}
 
+    def seed_history_if_empty(self, trades: list[ClosedTrade]) -> bool:
+        if not trades:
+            return False
+        overview = self._read_summary(self.overview_path, scope="all_time")
+        has_trade_log = self.trades_path.exists() and self.trades_path.stat().st_size > 0
+        if has_trade_log or int(overview.get("trade_count", 0)) > 0:
+            return False
+        for trade in trades:
+            self.append_trade(trade)
+        return True
+
     def _daily_summary_path(self, day_key: str) -> Path:
         return self.daily_dir / f"{day_key}.json"
 

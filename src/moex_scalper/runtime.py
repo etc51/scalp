@@ -456,6 +456,8 @@ class ScalperRuntime:
             for trade in restored["trades_today"]
             if trade.closed_at.astimezone(timezone.utc).strftime("%Y-%m-%d") == self.risk.current_day
         ]
+        if self.paper_store.seed_history_if_empty(self.state.trades_today):
+            LOGGER.info("Seeded paper trade history from restored session trades=%s", len(self.state.trades_today))
         self.state.blocked_reasons = restored["blocked_reasons"]
         self.state.snapshots_processed = restored["snapshots_processed"]
         self.state.signals_detected = restored["signals_detected"]
