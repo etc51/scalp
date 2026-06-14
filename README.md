@@ -242,3 +242,21 @@ sudo systemctl start moex-scalper-update.service
 - пока в `.env` стоит `SCALPER_MODE=paper`, сервис безопасно крутится в paper-режиме
 - для реальной торговли нужно осознанно перевести `.env` в `SCALPER_MODE=live`
 - `.env`, `reports/` и `runtime/` в git не коммитятся
+
+## Persistent Paper Stats
+
+В paper-режиме бот теперь может крутиться `24/7` и переживать рестарты сервиса без потери виртуального портфеля.
+
+Что сохраняется в `runtime/`:
+
+- `paper_session.json` — текущий paper-кэш, открытые позиции, текущий дневной PnL, cooldown и последние paper-сделки
+- `paper_trades.jsonl` — append-only журнал всех закрытых paper-сделок
+- `stats/overview.json` — накопительная статистика за все время
+- `stats/daily/YYYY-MM-DD.json` — дневная статистика по сделкам
+- `dashboard_state.json` — текущее состояние для внешнего dashboard
+
+Это позволяет:
+
+- держать paper-бота в фоне постоянно
+- после ночного автообновления или перезапуска сервиса поднимать его с сохраненным состоянием
+- смотреть накопительную статистику через dashboard и напрямую из `runtime/`

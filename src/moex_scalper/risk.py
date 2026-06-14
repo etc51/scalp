@@ -52,3 +52,16 @@ class RiskManager:
         self.cooldown_until[trade.instrument.instrument_id] = trade.closed_at + timedelta(
             seconds=self.config.cooldown_seconds
         )
+
+    def restore_state(
+        self,
+        *,
+        realized_pnl_rub: Decimal,
+        current_day: str,
+        cooldown_until: dict[str, datetime],
+        now: datetime | None = None,
+    ) -> None:
+        self.realized_pnl_rub = realized_pnl_rub
+        self.current_day = current_day
+        self.cooldown_until = dict(cooldown_until)
+        self._roll_day(now or datetime.now(timezone.utc))

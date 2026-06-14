@@ -37,6 +37,9 @@ class PaperExecutor:
     def available_cash_rub(self) -> Decimal:
         return self.cash_rub
 
+    def restore_cash(self, cash_rub: Decimal) -> None:
+        self.cash_rub = cash_rub
+
     def plan_entry(
         self,
         snapshot: MarketSnapshot,

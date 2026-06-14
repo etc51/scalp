@@ -67,7 +67,7 @@ HTML = """<!doctype html>
     }
     .grid {
       display: grid;
-      grid-template-columns: repeat(6, minmax(0, 1fr));
+      grid-template-columns: repeat(8, minmax(0, 1fr));
       gap: 14px;
       margin-bottom: 18px;
     }
@@ -143,7 +143,7 @@ HTML = """<!doctype html>
       padding: 10px 0 4px;
     }
     @media (max-width: 1180px) {
-      .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
       .layout { grid-template-columns: 1fr; }
     }
     @media (max-width: 760px) {
@@ -176,6 +176,8 @@ HTML = """<!doctype html>
       <div class="card"><div class="label">Equity</div><div class="value" id="equity">-</div></div>
       <div class="card"><div class="label">Realized PnL</div><div class="value" id="realized">-</div></div>
       <div class="card"><div class="label">Unrealized PnL</div><div class="value" id="unrealized">-</div></div>
+      <div class="card"><div class="label">Today Trades</div><div class="value" id="todayTrades">-</div></div>
+      <div class="card"><div class="label">All-Time Trades</div><div class="value" id="allTrades">-</div></div>
     </div>
 
     <div class="layout">
@@ -197,6 +199,17 @@ HTML = """<!doctype html>
       <div class="panel">
         <h2>Blocked Reasons</h2>
         <div class="chips" id="blockedWrap"></div>
+      </div>
+    </div>
+
+    <div class="layout">
+      <div class="panel">
+        <h2>Today Summary</h2>
+        <div id="todaySummaryWrap"></div>
+      </div>
+      <div class="panel">
+        <h2>All-Time Summary</h2>
+        <div id="overallSummaryWrap"></div>
       </div>
     </div>
   </div>
@@ -227,10 +240,32 @@ HTML = """<!doctype html>
       return `<table><thead><tr>${thead}</tr></thead><tbody>${tbody}</tbody></table>`;
     };
 
+    const renderSummary = (summary) => {
+      if (!summary) return '<div class="empty">Нет статистики</div>';
+      return renderTable(
+        ["Metric", "Value"],
+        [
+          ["Trades", fmtNum(summary.trade_count, 0)],
+          ["Win Rate", fmtNum(summary.win_rate_pct, 2) + " %"],
+          ["Net PnL", `<span class="${pnlClass(summary.net_pnl_rub)}">${fmtRub(summary.net_pnl_rub)}</span>`],
+          ["Gross PnL", `<span class="${pnlClass(summary.gross_pnl_rub)}">${fmtRub(summary.gross_pnl_rub)}</span>`],
+          ["Fees", fmtRub(summary.fees_rub)],
+          ["Turnover", fmtRub(summary.turnover_rub)],
+          ["Avg Hold", fmtNum(summary.average_hold_seconds, 2) + " s"],
+          ["Best Trade", `<span class="${pnlClass(summary.best_trade_rub)}">${fmtRub(summary.best_trade_rub)}</span>`],
+          ["Worst Trade", `<span class="${pnlClass(summary.worst_trade_rub)}">${fmtRub(summary.worst_trade_rub)}</span>`],
+          ["Last Ticker", summary.last_ticker || "—"],
+          ["Last Trade", summary.last_trade_at || "—"],
+        ],
+      );
+    };
+
     async function refresh() {
       try {
         const response = await fetch("/api/state?ts=" + Date.now(), { cache: "no-store" });
         const state = await response.json();
+        const todayStats = state.stats?.today || null;
+        const overallStats = state.stats?.overall || null;
 
         document.getElementById("statusText").textContent = "online";
         document.getElementById("mode").textContent = `${state.mode || "-"} / ${state.position_sizing_mode || "-"}`;
@@ -245,6 +280,8 @@ HTML = """<!doctype html>
         const unrealizedEl = document.getElementById("unrealized");
         unrealizedEl.textContent = fmtRub(state.portfolio?.unrealized_pnl_rub);
         unrealizedEl.className = "value " + pnlClass(state.portfolio?.unrealized_pnl_rub);
+        document.getElementById("todayTrades").textContent = fmtNum(todayStats?.trade_count || 0, 0);
+        document.getElementById("allTrades").textContent = fmtNum(overallStats?.trade_count || 0, 0);
 
         document.getElementById("subline").textContent =
           `watchlist: ${(state.watchlist || []).join(", ")} | updated: ${state.updated_at || "—"} | snapshots: ${state.snapshots_processed || 0} | signals: ${state.signals_detected || 0}`;
@@ -291,6 +328,9 @@ HTML = """<!doctype html>
         document.getElementById("blockedWrap").innerHTML = blockedEntries.length
           ? blockedEntries.map(([reason, count]) => `<div class="chip">${reason}: ${count}</div>`).join("")
           : '<div class="empty">Нет блокировок</div>';
+
+        document.getElementById("todaySummaryWrap").innerHTML = renderSummary(todayStats);
+        document.getElementById("overallSummaryWrap").innerHTML = renderSummary(overallStats);
       } catch (error) {
         document.getElementById("statusText").textContent = "waiting for state";
       }
@@ -314,6 +354,10 @@ def _default_payload() -> dict[str, object]:
         "signals_detected": 0,
         "realized_pnl_rub": "0",
         "blocked_reasons": {},
+        "stats": {
+            "today": None,
+            "overall": None,
+        },
         "portfolio": {
             "initial_cash_rub": None,
             "cash_rub": None,

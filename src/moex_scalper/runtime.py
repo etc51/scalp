@@ -17,6 +17,7 @@ from .commission import CommissionModel
 from .config import ScalperConfig
 from .domain import ClosedTrade, MarketSnapshot, Position, Side
 from .execution import LiveExecutor, PaperExecutor
+from .persistence import PaperRuntimeStore, restore_runtime_entities
 from .risk import RiskManager
 from .strategy import ModerateScalpingStrategy
 from .tbank import open_client, resolve_instruments, stream_orderbooks, validate_account
@@ -47,6 +48,7 @@ class BotState:
     blocked_reasons: Counter[str] = field(default_factory=Counter)
     last_snapshot_summary: dict[str, str] = field(default_factory=dict)
     last_snapshots: dict[str, MarketSnapshot] = field(default_factory=dict)
+    stats: dict[str, dict[str, object]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.trades_today is None:
@@ -62,6 +64,7 @@ class ScalperRuntime:
         self.stop_event = asyncio.Event()
         self._last_heartbeat_at: datetime | None = None
         self._last_state_write_at: datetime | None = None
+        self.paper_store = PaperRuntimeStore(config.runtime_dir)
 
     async def run(self) -> None:
         setup_logging(self.config.runtime_dir)
@@ -101,6 +104,11 @@ class ScalperRuntime:
                     commission_model=commission_model,
                     initial_cash_rub=self.config.paper_initial_cash_rub,
                 )
+                self._restore_paper_state(
+                    executor,
+                    instruments={item.instrument_id: item for item in instruments},
+                )
+                self._refresh_paper_stats()
 
             started = datetime.now(timezone.utc)
             try:
@@ -230,6 +238,8 @@ class ScalperRuntime:
         self.state.positions.pop(snapshot.instrument.instrument_id, None)
         self.state.trades_today.append(trade)
         self.risk.note_closed_trade(trade)
+        if isinstance(executor, PaperExecutor):
+            self._record_paper_trade(trade)
         LOGGER.info(
             "CLOSE %s reason=%s exit_price=%s gross=%s fees=%s net=%s realized_today=%s",
             trade.instrument.ticker,
@@ -307,6 +317,8 @@ class ScalperRuntime:
             market_value_rub = executor.market_value_rub(positions, latest_prices)
             unrealized_pnl_rub = executor.unrealized_pnl_rub(positions, latest_prices)
             equity_rub = executor.equity_rub(positions, latest_prices)
+            self._save_paper_session(executor)
+            self._refresh_paper_stats()
             portfolio = {
                 "initial_cash_rub": str(executor.initial_cash_rub),
                 "cash_rub": str(executor.cash_rub),
@@ -338,6 +350,7 @@ class ScalperRuntime:
             "signals_detected": self.state.signals_detected,
             "realized_pnl_rub": str(self.risk.realized_pnl_rub),
             "blocked_reasons": dict(self.state.blocked_reasons),
+            "stats": self.state.stats,
             "portfolio": portfolio,
             "positions": [
                 {
@@ -393,3 +406,74 @@ class ScalperRuntime:
         tmp_path = state_path.with_suffix(".json.tmp")
         tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp_path.replace(state_path)
+
+    def _restore_paper_state(
+        self,
+        executor: PaperExecutor,
+        *,
+        instruments: dict[str, Any],
+    ) -> None:
+        try:
+            payload = self.paper_store.load_session()
+        except Exception:  # noqa: BLE001
+            LOGGER.exception("Failed to load paper session state")
+            return
+        if not payload:
+            return
+
+        restored = restore_runtime_entities(payload, instruments=instruments)
+        executor.restore_cash(restored["cash_rub"])
+        self.state.positions = {
+            position.instrument.instrument_id: position
+            for position in restored["positions"]
+        }
+        self.risk.restore_state(
+            realized_pnl_rub=restored["risk_realized_pnl_rub"],
+            current_day=restored["risk_current_day"],
+            cooldown_until=restored["cooldown_until"],
+            now=datetime.now(timezone.utc),
+        )
+        self.state.trades_today = [
+            trade
+            for trade in restored["trades_today"]
+            if trade.closed_at.astimezone(timezone.utc).strftime("%Y-%m-%d") == self.risk.current_day
+        ]
+        self.state.blocked_reasons = restored["blocked_reasons"]
+        self.state.snapshots_processed = restored["snapshots_processed"]
+        self.state.signals_detected = restored["signals_detected"]
+        LOGGER.info(
+            "Restored paper session cash=%s positions=%s trades_today=%s realized_today=%s",
+            executor.cash_rub,
+            len(self.state.positions),
+            len(self.state.trades_today),
+            self.risk.realized_pnl_rub,
+        )
+
+    def _save_paper_session(self, executor: PaperExecutor) -> None:
+        try:
+            self.paper_store.save_session(
+                cash_rub=executor.cash_rub,
+                positions=list(self.state.positions.values()),
+                trades_today=self.state.trades_today,
+                current_day=self.risk.current_day,
+                realized_pnl_rub=self.risk.realized_pnl_rub,
+                cooldown_until=self.risk.cooldown_until,
+                blocked_reasons=self.state.blocked_reasons,
+                snapshots_processed=self.state.snapshots_processed,
+                signals_detected=self.state.signals_detected,
+            )
+        except Exception:  # noqa: BLE001
+            LOGGER.exception("Failed to save paper session state")
+
+    def _record_paper_trade(self, trade: ClosedTrade) -> None:
+        try:
+            self.paper_store.append_trade(trade)
+            self._refresh_paper_stats()
+        except Exception:  # noqa: BLE001
+            LOGGER.exception("Failed to persist paper trade")
+
+    def _refresh_paper_stats(self) -> None:
+        try:
+            self.state.stats = self.paper_store.load_stats(self.risk.current_day)
+        except Exception:  # noqa: BLE001
+            LOGGER.exception("Failed to load paper stats")
