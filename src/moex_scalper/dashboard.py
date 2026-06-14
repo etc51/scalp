@@ -212,6 +212,17 @@ HTML = """<!doctype html>
         <div id="overallSummaryWrap"></div>
       </div>
     </div>
+
+    <div class="layout">
+      <div class="panel">
+        <h2>Optimizer Top Candidate</h2>
+        <div id="optimizerTopWrap"></div>
+      </div>
+      <div class="panel">
+        <h2>Optimizer Baseline</h2>
+        <div id="optimizerBaselineWrap"></div>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -260,12 +271,35 @@ HTML = """<!doctype html>
       );
     };
 
+    const renderOptimizer = (report) => {
+      if (!report) return '<div class="empty">Пока нет optimizer-report</div>';
+      return renderTable(
+        ["Metric", "Value"],
+        [
+          ["Equity Delta", `<span class="${pnlClass(report.equity_delta_rub)}">${fmtRub(report.equity_delta_rub)}</span>`],
+          ["Net PnL", `<span class="${pnlClass(report.net_pnl_rub)}">${fmtRub(report.net_pnl_rub)}</span>`],
+          ["Trades", fmtNum(report.trade_count, 0)],
+          ["Win Rate", fmtNum(report.win_rate_pct, 2) + " %"],
+          ["Signals", fmtNum(report.signals_detected, 0)],
+          ["Open Positions", fmtNum(report.open_positions, 0)],
+          ["Spread", report.parameters?.max_spread_bps ?? "—"],
+          ["Imbalance", report.parameters?.min_imbalance ?? "—"],
+          ["Impulse", report.parameters?.min_impulse_bps ?? "—"],
+          ["TP / SL", `${report.parameters?.take_profit_bps ?? "—"} / ${report.parameters?.stop_loss_bps ?? "—"}`],
+          ["Time Stop", report.parameters?.time_stop_seconds ?? "—"],
+          ["Expected Edge", report.parameters?.min_expected_edge_bps ?? "—"],
+        ],
+      );
+    };
+
     async function refresh() {
       try {
         const response = await fetch("/api/state?ts=" + Date.now(), { cache: "no-store" });
         const state = await response.json();
         const todayStats = state.stats?.today || null;
         const overallStats = state.stats?.overall || null;
+        const optimizerTop = state.optimizer?.top?.[0] || null;
+        const optimizerBaseline = state.optimizer?.baseline || null;
 
         document.getElementById("statusText").textContent = "online";
         document.getElementById("mode").textContent = `${state.mode || "-"} / ${state.position_sizing_mode || "-"}`;
@@ -331,6 +365,8 @@ HTML = """<!doctype html>
 
         document.getElementById("todaySummaryWrap").innerHTML = renderSummary(todayStats);
         document.getElementById("overallSummaryWrap").innerHTML = renderSummary(overallStats);
+        document.getElementById("optimizerTopWrap").innerHTML = renderOptimizer(optimizerTop);
+        document.getElementById("optimizerBaselineWrap").innerHTML = renderOptimizer(optimizerBaseline);
       } catch (error) {
         document.getElementById("statusText").textContent = "waiting for state";
       }
@@ -364,6 +400,10 @@ def _default_payload() -> dict[str, object]:
             "today": None,
             "overall": None,
         },
+        "optimizer": {
+            "top": [],
+            "baseline": None,
+        },
         "portfolio": {
             "initial_cash_rub": None,
             "cash_rub": None,
@@ -381,6 +421,7 @@ def _default_payload() -> dict[str, object]:
 def serve_dashboard(*, host: str, port: int, runtime_dir: Path) -> None:
     runtime_dir.mkdir(parents=True, exist_ok=True)
     state_path = runtime_dir / "dashboard_state.json"
+    optimizer_path = runtime_dir / "optimizer" / "latest.json"
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
@@ -401,6 +442,11 @@ def serve_dashboard(*, host: str, port: int, runtime_dir: Path) -> None:
                         payload = json.loads(state_path.read_text(encoding="utf-8"))
                     except json.JSONDecodeError:
                         payload = _default_payload()
+                if optimizer_path.exists():
+                    try:
+                        payload["optimizer"] = json.loads(optimizer_path.read_text(encoding="utf-8"))
+                    except json.JSONDecodeError:
+                        payload["optimizer"] = {"top": [], "baseline": None}
                 body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
