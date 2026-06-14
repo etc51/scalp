@@ -3,6 +3,7 @@
 .tmp_sdk/
 __pycache__/
 *.pyc
+*.egg-info/
 reports/
 runtime/
 *.tar.gz
