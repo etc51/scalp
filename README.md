@@ -294,10 +294,12 @@ python3 -m moex_scalper optimize --days 5 --write-report
 - отбрасывает snapshots вне разрешенного entry-window стратегии, чтобы weekend/off-hours не искажали оптимизацию
 - прогоняет набор candidate-конфигураций стратегии
 - сравнивает их по `score`, `equity_delta_rub`, `max_drawdown_rub`, `profit_factor`, `trade_count`
+- строит `signal_coverage` по текущему конфигу: сколько in-window snapshots проходят spread / imbalance / impulse и доходят до готового сигнала
 - пишет отчет в `runtime/optimizer/latest.json`
 - добавляет `recommendation`, если найден конфиг, который достаточно лучше baseline
 
 Если в выбранных файлах есть snapshots, но ни один не попал в торговое окно новых входов, optimizer вернет `status=no_entry_window_data` вместо ложного вывода по пустому sample.
+`signal_coverage` отражает именно фильтры сигнала и помогает понять, почему сделок мало даже до учета cooldown, дневного лимита и max-open-positions.
 
 На сервере это можно запускать и вручную, и автоматически:
 

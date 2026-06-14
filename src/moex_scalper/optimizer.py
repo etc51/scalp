@@ -66,6 +66,7 @@ def optimize_parameters(
             enabled=write_report,
         )
         return payload
+    signal_coverage = build_signal_coverage(config, snapshots, top_n=top_n)
 
     candidates = build_candidate_configs(config)
     current_signature = parameter_signature(config)
@@ -93,6 +94,7 @@ def optimize_parameters(
         "raw_snapshot_count": len(raw_snapshots),
         "snapshot_count": len(snapshots),
         "entry_window_summary": entry_window_summary,
+        "signal_coverage": signal_coverage,
         "candidate_count": len(results),
         "top": top_results,
         "baseline": baseline,
@@ -191,6 +193,153 @@ def snapshot_in_entry_window(config: ScalperConfig, moment: datetime) -> tuple[b
     if current_time > config.entry_end_time:
         return False, "entry_after_window"
     return True, "ok"
+
+
+def build_signal_coverage(
+    config: ScalperConfig,
+    snapshots: list[MarketSnapshot],
+    *,
+    top_n: int,
+) -> dict[str, Any]:
+    strategy = ModerateScalpingStrategy(config)
+    totals = _new_coverage_bucket()
+    by_ticker: dict[str, dict[str, Any]] = {}
+    by_hour: dict[str, dict[str, Any]] = {}
+
+    for snapshot in snapshots:
+        local_hour = snapshot.at.astimezone(config.timezone).strftime("%H:00")
+        ticker_bucket = by_ticker.setdefault(snapshot.instrument.ticker, _new_coverage_bucket())
+        hour_bucket = by_hour.setdefault(local_hour, _new_coverage_bucket())
+        signal, block_reason, metrics = strategy.diagnose_entry(snapshot, has_open_position=False)
+        _update_coverage_bucket(totals, snapshot, signal=signal, block_reason=block_reason, metrics=metrics, config=config)
+        _update_coverage_bucket(ticker_bucket, snapshot, signal=signal, block_reason=block_reason, metrics=metrics, config=config)
+        _update_coverage_bucket(hour_bucket, snapshot, signal=signal, block_reason=block_reason, metrics=metrics, config=config)
+
+    return {
+        "config_signature": parameter_signature(config),
+        "summary": _finalize_coverage_bucket("all", totals),
+        "by_ticker": build_ranked_coverage(by_ticker, top_n=top_n),
+        "by_hour": build_ranked_coverage(by_hour, top_n=top_n),
+    }
+
+
+def build_ranked_coverage(items: dict[str, dict[str, Any]], *, top_n: int) -> dict[str, Any]:
+    finalized = [_finalize_coverage_bucket(key, payload) for key, payload in items.items()]
+    worst = sorted(
+        finalized,
+        key=lambda item: (
+            Decimal(str(item["signal_ready_rate_pct"])),
+            -int(item["snapshot_count"]),
+            int(item["signal_ready_count"]),
+        ),
+    )[:top_n]
+    best = sorted(
+        finalized,
+        key=lambda item: (
+            Decimal(str(item["signal_ready_rate_pct"])),
+            int(item["signal_ready_count"]),
+            -int(item["snapshot_count"]),
+        ),
+        reverse=True,
+    )[:top_n]
+    return {
+        "count": len(finalized),
+        "worst": worst,
+        "best": best,
+    }
+
+
+def _new_coverage_bucket() -> dict[str, Any]:
+    return {
+        "snapshot_count": 0,
+        "signal_ready_count": 0,
+        "spread_pass_count": 0,
+        "imbalance_pass_count": 0,
+        "impulse_pass_count": 0,
+        "expected_edge_pass_count": 0,
+        "blocked": Counter(),
+        "sum_spread_bps": Decimal("0"),
+        "sum_imbalance": Decimal("0"),
+        "sum_impulse_bps": Decimal("0"),
+    }
+
+
+def _update_coverage_bucket(
+    bucket: dict[str, Any],
+    snapshot: MarketSnapshot,
+    *,
+    signal: Any,
+    block_reason: str,
+    metrics: dict[str, Any],
+    config: ScalperConfig,
+) -> None:
+    spread_bps = Decimal(str(metrics.get("spread_bps", snapshot.spread_bps)))
+    imbalance = Decimal(str(metrics.get("imbalance", snapshot.imbalance)))
+    impulse_bps = Decimal(str(metrics.get("impulse_bps", "0")))
+    expected_edge_raw = metrics.get("expected_edge_bps")
+    expected_edge_bps = Decimal(str(expected_edge_raw)) if expected_edge_raw is not None else None
+
+    bucket["snapshot_count"] += 1
+    bucket["sum_spread_bps"] += spread_bps
+    bucket["sum_imbalance"] += imbalance
+    bucket["sum_impulse_bps"] += impulse_bps
+
+    spread_pass = spread_bps <= config.max_spread_bps
+    imbalance_pass = spread_pass and imbalance >= config.min_imbalance
+    impulse_pass = imbalance_pass and impulse_bps >= config.min_impulse_bps
+    expected_edge_pass = signal is not None or (
+        impulse_pass
+        and expected_edge_bps is not None
+        and expected_edge_bps >= config.min_expected_edge_bps
+    )
+
+    if spread_pass:
+        bucket["spread_pass_count"] += 1
+    if imbalance_pass:
+        bucket["imbalance_pass_count"] += 1
+    if impulse_pass:
+        bucket["impulse_pass_count"] += 1
+    if expected_edge_pass:
+        bucket["expected_edge_pass_count"] += 1
+
+    if signal is not None:
+        bucket["signal_ready_count"] += 1
+    else:
+        bucket["blocked"][block_reason] += 1
+
+
+def _finalize_coverage_bucket(key: str, bucket: dict[str, Any]) -> dict[str, Any]:
+    snapshot_count = int(bucket["snapshot_count"])
+    signal_ready_count = int(bucket["signal_ready_count"])
+    return {
+        "key": key,
+        "snapshot_count": snapshot_count,
+        "signal_ready_count": signal_ready_count,
+        "signal_ready_rate_pct": _pct(signal_ready_count, snapshot_count),
+        "spread_pass_rate_pct": _pct(int(bucket["spread_pass_count"]), snapshot_count),
+        "imbalance_pass_rate_pct": _pct(int(bucket["imbalance_pass_count"]), snapshot_count),
+        "impulse_pass_rate_pct": _pct(int(bucket["impulse_pass_count"]), snapshot_count),
+        "expected_edge_pass_rate_pct": _pct(int(bucket["expected_edge_pass_count"]), snapshot_count),
+        "average_spread_bps": _avg_decimal(bucket["sum_spread_bps"], snapshot_count),
+        "average_imbalance": _avg_decimal(bucket["sum_imbalance"], snapshot_count),
+        "average_impulse_bps": _avg_decimal(bucket["sum_impulse_bps"], snapshot_count),
+        "top_blocked_reasons": [
+            {"reason": reason, "count": count}
+            for reason, count in bucket["blocked"].most_common(3)
+        ],
+    }
+
+
+def _pct(numerator: int, denominator: int) -> float:
+    if denominator <= 0:
+        return 0.0
+    return round((numerator / denominator) * 100, 2)
+
+
+def _avg_decimal(total: Decimal, count: int) -> str:
+    if count <= 0:
+        return "0"
+    return str(total / Decimal(count))
 
 
 def build_candidate_configs(base: ScalperConfig) -> list[ScalperConfig]:

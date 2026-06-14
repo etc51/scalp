@@ -236,6 +236,17 @@ HTML = """<!doctype html>
 
     <div class="layout">
       <div class="panel">
+        <h2>Signal Coverage</h2>
+        <div id="coverageSummaryWrap"></div>
+      </div>
+      <div class="panel">
+        <h2>Coverage Breakdown</h2>
+        <div id="coverageBreakdownWrap"></div>
+      </div>
+    </div>
+
+    <div class="layout">
+      <div class="panel">
         <h2>Watchdog</h2>
         <div id="watchdogWrap"></div>
       </div>
@@ -348,6 +359,55 @@ HTML = """<!doctype html>
           ["Score", fmtNum(report.score, 2)],
         ],
       );
+    };
+
+    const renderCoverageSummary = (coverage) => {
+      const summary = coverage?.summary || null;
+      if (!summary) return '<div class="empty">Пока нет signal-coverage</div>';
+      return renderTable(
+        ["Metric", "Value"],
+        [
+          ["In-Window Snapshots", fmtNum(summary.snapshot_count, 0)],
+          ["Signal Ready", fmtNum(summary.signal_ready_count, 0)],
+          ["Ready Rate", fmtNum(summary.signal_ready_rate_pct, 2) + " %"],
+          ["Spread Pass", fmtNum(summary.spread_pass_rate_pct, 2) + " %"],
+          ["Imbalance Pass", fmtNum(summary.imbalance_pass_rate_pct, 2) + " %"],
+          ["Impulse Pass", fmtNum(summary.impulse_pass_rate_pct, 2) + " %"],
+          ["Expected Edge Pass", fmtNum(summary.expected_edge_pass_rate_pct, 2) + " %"],
+          ["Avg Spread", fmtNum(summary.average_spread_bps, 2) + " bps"],
+          ["Avg Imbalance", fmtNum(summary.average_imbalance, 3)],
+          ["Avg Impulse", fmtNum(summary.average_impulse_bps, 2) + " bps"],
+          ["Top Blocked", (summary.top_blocked_reasons || []).map((item) => `${item.reason}=${item.count}`).join(", ") || "—"],
+        ],
+      );
+    };
+
+    const renderCoverageRanked = (section, label) => {
+      if (!section) return '<div class="empty">Нет coverage-data</div>';
+      const renderOne = (title, rows) => {
+        if (!rows.length) return `<div class="subhead">${title}</div><div class="empty">Пока пусто</div>`;
+        return `<div class="subhead">${title}</div>${renderTable(
+          [label, "Snapshots", "Ready", "Ready Rate", "Spread", "Imbalance", "Impulse", "Top Blocked"],
+          rows.map((item) => [
+            item.key,
+            fmtNum(item.snapshot_count, 0),
+            fmtNum(item.signal_ready_count, 0),
+            fmtNum(item.signal_ready_rate_pct, 2) + " %",
+            fmtNum(item.spread_pass_rate_pct, 1) + " %",
+            fmtNum(item.imbalance_pass_rate_pct, 1) + " %",
+            fmtNum(item.impulse_pass_rate_pct, 1) + " %",
+            (item.top_blocked_reasons || []).map((reason) => `${reason.reason}=${reason.count}`).join(", ") || "—",
+          ]),
+        )}`;
+      };
+      return renderOne("Worst", section.worst || []) + `<div class="stack-gap"></div>` + renderOne("Best", section.best || []);
+    };
+
+    const renderCoverageBreakdown = (coverage) => {
+      if (!coverage) return '<div class="empty">Пока нет signal-coverage</div>';
+      const ticker = renderCoverageRanked(coverage.by_ticker, "Ticker");
+      const hour = renderCoverageRanked(coverage.by_hour, "Hour");
+      return ticker + `<div class="stack-gap"></div>` + hour;
     };
 
     const renderWatchdog = (watchdog) => {
@@ -499,6 +559,7 @@ HTML = """<!doctype html>
         const optimizerTop = optimizer?.top?.[0] || null;
         const optimizerBaseline = optimizer?.baseline || null;
         const optimizerRecommendation = optimizer?.recommendation || null;
+        const coverage = optimizer?.signal_coverage || null;
         const watchdog = state.watchdog || null;
         const tuning = state.tuning || null;
         const restrictions = state.restrictions || null;
@@ -587,6 +648,8 @@ HTML = """<!doctype html>
           : "";
         document.getElementById("optimizerTopWrap").innerHTML = recommendationLine + renderOptimizer(optimizerTop);
         document.getElementById("optimizerBaselineWrap").innerHTML = renderOptimizer(optimizerBaseline);
+        document.getElementById("coverageSummaryWrap").innerHTML = renderCoverageSummary(coverage);
+        document.getElementById("coverageBreakdownWrap").innerHTML = renderCoverageBreakdown(coverage);
         document.getElementById("watchdogWrap").innerHTML = renderWatchdog(watchdog);
         document.getElementById("strategyWrap").innerHTML = renderStrategy(state.strategy_parameters || null);
         document.getElementById("restrictionsWrap").innerHTML = renderRestrictions(restrictions, activeRestrictions);
