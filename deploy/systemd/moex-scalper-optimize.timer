@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly optimizer report for MOEX scalper
+
+[Timer]
+OnCalendar=Mon..Fri 18:10:00
+Persistent=true
+Unit=moex-scalper-optimize.service
+
+[Install]
+WantedBy=timers.target

@@ -8,6 +8,7 @@ from pathlib import Path
 from .commission import CommissionModel
 from .config import ScalperConfig, build_parser, load_config, load_dotenv
 from .dashboard import serve_dashboard
+from .optimizer import optimize_parameters
 from .runtime import ScalperRuntime
 from .tbank import open_client, resolve_instruments, validate_account
 
@@ -51,10 +52,20 @@ def main() -> int:
         serve_dashboard(host=args.host, port=args.port, runtime_dir=runtime_dir)
         return 0
 
-    config = load_config(args)
+    config = load_config(args, require_auth=args.command in {"doctor", "run"})
 
     if args.command == "doctor":
         return asyncio.run(run_doctor(config))
+    if args.command == "optimize":
+        payload = optimize_parameters(
+            config,
+            date_key=args.date,
+            input_path=args.input,
+            top_n=args.top,
+            write_report=args.write_report,
+        )
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
 
     runtime = ScalperRuntime(config)
     try:

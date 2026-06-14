@@ -17,6 +17,7 @@ from .commission import CommissionModel
 from .config import ScalperConfig
 from .domain import ClosedTrade, MarketSnapshot, Position, Side
 from .execution import LiveExecutor, PaperExecutor
+from .market_history import MarketSnapshotRecorder
 from .persistence import PaperRuntimeStore, restore_runtime_entities
 from .risk import RiskManager
 from .strategy import ModerateScalpingStrategy
@@ -65,6 +66,7 @@ class ScalperRuntime:
         self._last_heartbeat_at: datetime | None = None
         self._last_state_write_at: datetime | None = None
         self.paper_store = PaperRuntimeStore(config.runtime_dir)
+        self.snapshot_recorder = MarketSnapshotRecorder(config.runtime_dir, config.timezone)
 
     async def run(self) -> None:
         setup_logging(self.config.runtime_dir)
@@ -155,6 +157,10 @@ class ScalperRuntime:
 
     async def _handle_snapshot(self, snapshot: MarketSnapshot, executor: Any) -> None:
         self.state.snapshots_processed += 1
+        try:
+            self.snapshot_recorder.append(snapshot)
+        except Exception:  # noqa: BLE001
+            LOGGER.exception("Failed to persist market snapshot")
         self.state.last_snapshots[snapshot.instrument.instrument_id] = snapshot
         self.state.last_snapshot_summary[snapshot.instrument.ticker] = (
             f"bid={snapshot.bid_price} ask={snapshot.ask_price} "

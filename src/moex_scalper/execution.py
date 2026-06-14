@@ -73,19 +73,25 @@ class PaperExecutor:
 
         return quantity_lots, entry_notional, "ok"
 
-    async def execute_entry(self, snapshot: MarketSnapshot, quantity_lots: int) -> ExecutionReport:
+    def execute_entry_sync(self, snapshot: MarketSnapshot, quantity_lots: int) -> ExecutionReport:
         report = self._build_report(snapshot, quantity_lots, Side.BUY, snapshot.ask_price)
         total_cost = report.fill_price * Decimal(snapshot.instrument.lot_size) * Decimal(quantity_lots) + report.fee_rub
         self.cash_rub -= total_cost
         report.metadata["cash_after_rub"] = str(self.cash_rub)
         return report
 
-    async def execute_exit(self, snapshot: MarketSnapshot, quantity_lots: int) -> ExecutionReport:
+    async def execute_entry(self, snapshot: MarketSnapshot, quantity_lots: int) -> ExecutionReport:
+        return self.execute_entry_sync(snapshot, quantity_lots)
+
+    def execute_exit_sync(self, snapshot: MarketSnapshot, quantity_lots: int) -> ExecutionReport:
         report = self._build_report(snapshot, quantity_lots, Side.SELL, snapshot.bid_price)
         proceeds = report.fill_price * Decimal(snapshot.instrument.lot_size) * Decimal(quantity_lots)
         self.cash_rub += proceeds - report.fee_rub
         report.metadata["cash_after_rub"] = str(self.cash_rub)
         return report
+
+    async def execute_exit(self, snapshot: MarketSnapshot, quantity_lots: int) -> ExecutionReport:
+        return self.execute_exit_sync(snapshot, quantity_lots)
 
     def market_value_rub(self, positions: list[Any], latest_prices: dict[str, Decimal]) -> Decimal:
         total = Decimal("0")

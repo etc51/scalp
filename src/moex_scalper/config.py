@@ -115,7 +115,7 @@ class ScalperConfig:
     paper_initial_cash_rub: Decimal
     position_sizing_mode: str
     timezone_name: str
-    timezone: ZoneInfo
+    timezone: ZoneInfo | timezone
     entry_weekdays: tuple[int, ...]
     entry_start_time: time
     entry_end_time: time
@@ -130,21 +130,25 @@ def build_parser() -> argparse.ArgumentParser:
         prog="moex_scalper",
         description="Moderate scalper for high-liquidity MOEX stocks via T-Bank Invest API.",
     )
-    parser.add_argument("command", choices=("doctor", "run", "dashboard"))
+    parser.add_argument("command", choices=("doctor", "run", "dashboard", "optimize"))
     parser.add_argument("--mode", choices=("paper", "live"), default=os.getenv("SCALPER_MODE", "paper"))
     parser.add_argument("--watchlist", default=os.getenv("SCALPER_WATCHLIST", "SBER,GAZP,LKOH,VTBR"))
     parser.add_argument("--run-seconds", type=float, default=float(os.getenv("SCALPER_RUN_DURATION_SECONDS", "0")))
     parser.add_argument("--host", default=os.getenv("SCALPER_DASHBOARD_HOST", "0.0.0.0"))
     parser.add_argument("--port", type=int, default=int(os.getenv("SCALPER_DASHBOARD_PORT", "8080")))
+    parser.add_argument("--date", default=None)
+    parser.add_argument("--input", default=None)
+    parser.add_argument("--top", type=int, default=10)
+    parser.add_argument("--write-report", action="store_true")
     return parser
 
 
-def load_config(args: argparse.Namespace) -> ScalperConfig:
+def load_config(args: argparse.Namespace, *, require_auth: bool = True) -> ScalperConfig:
     token = os.getenv("TBANK_TOKEN", "").strip()
     account_id = os.getenv("TBANK_ACCOUNT_ID", "").strip()
-    if not token:
+    if require_auth and not token:
         raise SystemExit("TBANK_TOKEN is required.")
-    if args.mode == "live" and not account_id:
+    if require_auth and args.mode == "live" and not account_id:
         raise SystemExit("TBANK_ACCOUNT_ID is required for live mode.")
 
     default_max_open_positions = "4" if args.mode == "paper" else "1"
