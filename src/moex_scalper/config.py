@@ -130,7 +130,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="moex_scalper",
         description="Moderate scalper for high-liquidity MOEX stocks via T-Bank Invest API.",
     )
-    parser.add_argument("command", choices=("doctor", "run", "dashboard", "optimize"))
+    parser.add_argument("command", choices=("doctor", "run", "dashboard", "optimize", "analyze"))
     parser.add_argument("--mode", choices=("paper", "live"), default=os.getenv("SCALPER_MODE", "paper"))
     parser.add_argument("--watchlist", default=os.getenv("SCALPER_WATCHLIST", "SBER,GAZP,LKOH,VTBR"))
     parser.add_argument("--run-seconds", type=float, default=float(os.getenv("SCALPER_RUN_DURATION_SECONDS", "0")))
@@ -152,6 +152,11 @@ def load_config(args: argparse.Namespace, *, require_auth: bool = True) -> Scalp
         raise SystemExit("TBANK_TOKEN is required.")
     if require_auth and args.mode == "live" and not account_id:
         raise SystemExit("TBANK_ACCOUNT_ID is required for live mode.")
+    if require_auth and args.mode == "live" and not parse_bool(os.getenv("SCALPER_ALLOW_LIVE_TRADING"), default=False):
+        raise SystemExit(
+            "Live trading is disabled. Keep SCALPER_MODE=paper unless the user explicitly approves live mode "
+            "and SCALPER_ALLOW_LIVE_TRADING=1 is set."
+        )
 
     default_max_open_positions = "4" if args.mode == "paper" else "1"
     timezone_name, parsed_timezone = parse_timezone(os.getenv("SCALPER_TIMEZONE"))

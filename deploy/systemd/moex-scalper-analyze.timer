@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly trade analysis report for MOEX scalper
+
+[Timer]
+OnCalendar=Mon..Fri 18:06:00
+Persistent=true
+Unit=moex-scalper-analyze.service
+
+[Install]
+WantedBy=timers.target

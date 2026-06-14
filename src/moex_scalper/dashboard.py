@@ -142,6 +142,16 @@ HTML = """<!doctype html>
       color: var(--muted);
       padding: 10px 0 4px;
     }
+    .subhead {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      margin: 14px 0 8px;
+    }
+    .stack-gap {
+      margin-top: 14px;
+    }
     @media (max-width: 1180px) {
       .grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
       .layout { grid-template-columns: 1fr; }
@@ -223,6 +233,28 @@ HTML = """<!doctype html>
         <div id="optimizerBaselineWrap"></div>
       </div>
     </div>
+
+    <div class="layout">
+      <div class="panel">
+        <h2>Trade Analysis</h2>
+        <div id="analysisSummaryWrap"></div>
+      </div>
+      <div class="panel">
+        <h2>Analysis Focus</h2>
+        <div id="analysisFocusWrap"></div>
+      </div>
+    </div>
+
+    <div class="layout">
+      <div class="panel">
+        <h2>Ticker Breakdown</h2>
+        <div id="analysisTickerWrap"></div>
+      </div>
+      <div class="panel">
+        <h2>Hour Breakdown</h2>
+        <div id="analysisHourWrap"></div>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -296,6 +328,53 @@ HTML = """<!doctype html>
       );
     };
 
+    const renderAnalysisSummary = (analysis) => {
+      if (!analysis || !analysis.summary) return '<div class="empty">Пока нет analysis-report</div>';
+      const summary = analysis.summary;
+      return renderTable(
+        ["Metric", "Value"],
+        [
+          ["Window", `${analysis.window?.start_date || "—"} .. ${analysis.window?.end_date || "—"}`],
+          ["Days With Trades", fmtNum(analysis.window?.days_with_trades || 0, 0)],
+          ["Trades", fmtNum(summary.trade_count, 0)],
+          ["Win Rate", fmtNum(summary.win_rate_pct, 2) + " %"],
+          ["Net PnL", `<span class="${pnlClass(summary.net_pnl_rub)}">${fmtRub(summary.net_pnl_rub)}</span>`],
+          ["Expectancy", `<span class="${pnlClass(summary.expectancy_rub)}">${fmtRub(summary.expectancy_rub)}</span>`],
+          ["Profit Factor", fmtNum(summary.profit_factor, 2)],
+          ["Avg Win", `<span class="${pnlClass(summary.average_win_rub)}">${fmtRub(summary.average_win_rub)}</span>`],
+          ["Avg Loss", `<span class="${pnlClass(summary.average_loss_rub)}">${fmtRub(summary.average_loss_rub)}</span>`],
+          ["Median Trade", `<span class="${pnlClass(summary.median_trade_rub)}">${fmtRub(summary.median_trade_rub)}</span>`],
+          ["Avg Hold", fmtNum(summary.average_hold_seconds, 2) + " s"],
+          ["Assessment", analysis.assessment || "—"],
+        ],
+      );
+    };
+
+    const renderFocus = (analysis) => {
+      const focus = analysis?.focus || [];
+      if (!focus.length) return '<div class="empty">Нет focus-items</div>';
+      return `<div class="chips">${focus.map((item) => `<div class="chip">${item.message}</div>`).join("")}</div>`;
+    };
+
+    const renderBreakdown = (payload, label) => {
+      if (!payload) return '<div class="empty">Нет breakdown</div>';
+      const renderOne = (title, rows) => {
+        if (!rows.length) return `<div class="subhead">${title}</div><div class="empty">Пока пусто</div>`;
+        return `<div class="subhead">${title}</div>${renderTable(
+          [label, "Trades", "Win Rate", "Net PnL", "Expectancy", "Profit Factor"],
+          rows.map((item) => [
+            item.key,
+            fmtNum(item.trade_count, 0),
+            fmtNum(item.win_rate_pct, 2) + " %",
+            `<span class="${pnlClass(item.net_pnl_rub)}">${fmtRub(item.net_pnl_rub)}</span>`,
+            `<span class="${pnlClass(item.expectancy_rub)}">${fmtRub(item.expectancy_rub)}</span>`,
+            fmtNum(item.profit_factor, 2),
+          ]),
+        )}`;
+      };
+      return renderOne("Worst", payload.worst || []) + `<div class="stack-gap"></div>` + renderOne("Best", payload.best || []);
+    };
+
     async function refresh() {
       try {
         const response = await fetch("/api/state?ts=" + Date.now(), { cache: "no-store" });
@@ -305,6 +384,7 @@ HTML = """<!doctype html>
         const optimizerTop = state.optimizer?.top?.[0] || null;
         const optimizerBaseline = state.optimizer?.baseline || null;
         const optimizerRecommendation = state.optimizer?.recommendation || null;
+        const analysis = state.analysis || null;
 
         document.getElementById("statusText").textContent = "online";
         document.getElementById("mode").textContent = `${state.mode || "-"} / ${state.position_sizing_mode || "-"}`;
@@ -375,6 +455,10 @@ HTML = """<!doctype html>
           : "";
         document.getElementById("optimizerTopWrap").innerHTML = recommendationLine + renderOptimizer(optimizerTop);
         document.getElementById("optimizerBaselineWrap").innerHTML = renderOptimizer(optimizerBaseline);
+        document.getElementById("analysisSummaryWrap").innerHTML = renderAnalysisSummary(analysis);
+        document.getElementById("analysisFocusWrap").innerHTML = renderFocus(analysis);
+        document.getElementById("analysisTickerWrap").innerHTML = renderBreakdown(analysis?.by_ticker, "Ticker");
+        document.getElementById("analysisHourWrap").innerHTML = renderBreakdown(analysis?.by_hour, "Hour");
       } catch (error) {
         document.getElementById("statusText").textContent = "waiting for state";
       }
@@ -412,6 +496,7 @@ def _default_payload() -> dict[str, object]:
             "top": [],
             "baseline": None,
         },
+        "analysis": None,
         "portfolio": {
             "initial_cash_rub": None,
             "cash_rub": None,
@@ -430,6 +515,7 @@ def serve_dashboard(*, host: str, port: int, runtime_dir: Path) -> None:
     runtime_dir.mkdir(parents=True, exist_ok=True)
     state_path = runtime_dir / "dashboard_state.json"
     optimizer_path = runtime_dir / "optimizer" / "latest.json"
+    analysis_path = runtime_dir / "analysis" / "latest.json"
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
@@ -455,6 +541,11 @@ def serve_dashboard(*, host: str, port: int, runtime_dir: Path) -> None:
                         payload["optimizer"] = json.loads(optimizer_path.read_text(encoding="utf-8"))
                     except json.JSONDecodeError:
                         payload["optimizer"] = {"top": [], "baseline": None}
+                if analysis_path.exists():
+                    try:
+                        payload["analysis"] = json.loads(analysis_path.read_text(encoding="utf-8"))
+                    except json.JSONDecodeError:
+                        payload["analysis"] = None
                 body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "application/json; charset=utf-8")

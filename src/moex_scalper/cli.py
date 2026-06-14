@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 
+from .analysis import analyze_trades
 from .commission import CommissionModel
 from .config import ScalperConfig, build_parser, load_config, load_dotenv
 from .dashboard import serve_dashboard
@@ -64,6 +65,18 @@ def main() -> int:
             top_n=args.top,
             days=args.days,
             min_trades=args.min_trades,
+            write_report=args.write_report,
+        )
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "analyze":
+        payload = analyze_trades(
+            config,
+            date_key=args.date,
+            input_path=args.input,
+            top_n=args.top,
+            days=args.days,
             write_report=args.write_report,
         )
         print(json.dumps(payload, ensure_ascii=False, indent=2))

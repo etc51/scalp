@@ -188,9 +188,9 @@ python3 -m moex_scalper run --mode live
 
 Важно:
 
-- текущий live-режим рассчитан на наш measured latency и использует market orders
-- это стартовый боевой каркас, а не финальная production-версия
+- разрешена только `paper`-торговля, live-режим остается заблокирован до явного разрешения пользователя
 - short по акциям по умолчанию выключен
+- это рабочий paper-контур для накопления статистики и data-driven тюнинга
 
 ## GitHub Auto-Update On Server
 
@@ -240,7 +240,7 @@ sudo systemctl start moex-scalper-update.service
 Безопасность запуска:
 
 - пока в `.env` стоит `SCALPER_MODE=paper`, сервис безопасно крутится в paper-режиме
-- для реальной торговли нужно осознанно перевести `.env` в `SCALPER_MODE=live`
+- даже если кто-то переведет `.env` в `SCALPER_MODE=live`, бот не стартует без `SCALPER_ALLOW_LIVE_TRADING=1`
 - `.env`, `reports/` и `runtime/` в git не коммитятся
 
 Торговое окно для новых входов:
@@ -261,6 +261,7 @@ sudo systemctl start moex-scalper-update.service
 - `stats/overview.json` — накопительная статистика за все время
 - `stats/daily/YYYY-MM-DD.json` — дневная статистика по сделкам
 - `dashboard_state.json` — текущее состояние для внешнего dashboard
+- `analysis/latest.json` — nightly trade-analysis по реальным paper-сделкам
 
 Это позволяет:
 
@@ -298,3 +299,25 @@ python3 -m moex_scalper optimize --days 5 --write-report
 - по умолчанию таймер срабатывает в `18:10 MSK` по `понедельник-пятница`
 
 Это не гарантирует “магический плюс”, но дает нам уже не ручную настройку на глаз, а рабочий контур data-driven улучшения стратегии.
+
+## Trade Analysis
+
+Команда trade-analysis:
+
+```bash
+python3 -m moex_scalper analyze --days 5 --write-report
+```
+
+Что делает:
+
+- читает реальные закрытые `paper`-сделки из `runtime/paper_trades.jsonl`
+- строит summary по rolling window
+- показывает worst/best breakdown по тикерам и по часам закрытия
+- выделяет focus-зоны: слабый тикер, слабый час, проблемный `exit_reason`
+- пишет отчет в `runtime/analysis/latest.json`
+
+На сервере это можно запускать и вручную, и автоматически:
+
+- ручной запуск: `sudo systemctl start moex-scalper-analyze.service`
+- автоматический таймер: `moex-scalper-analyze.timer`
+- по умолчанию таймер срабатывает в `18:06 MSK` по `понедельник-пятница`
