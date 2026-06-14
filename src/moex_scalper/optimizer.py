@@ -1,19 +1,18 @@
 from __future__ import annotations
 
-import itertools
 import json
 from collections import Counter
 from dataclasses import replace
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 from .commission import CommissionModel
 from .config import ScalperConfig
-from .domain import ClosedTrade, Position
+from .domain import ClosedTrade, MarketSnapshot, Position
 from .execution import PaperExecutor
-from .market_history import load_snapshots, snapshot_path_for_date
+from .market_history import load_snapshots_from_paths, snapshot_path_for_date
 from .risk import RiskManager
 from .strategy import ModerateScalpingStrategy
 
@@ -24,50 +23,102 @@ def optimize_parameters(
     date_key: str | None,
     input_path: str | None,
     top_n: int,
+    days: int,
+    min_trades: int,
     write_report: bool,
 ) -> dict[str, Any]:
-    snapshot_file = Path(input_path) if input_path else snapshot_path_for_date(config.runtime_dir, resolve_date_key(config, date_key))
-    snapshots = load_snapshots(snapshot_file)
+    snapshot_files = resolve_snapshot_files(
+        config,
+        date_key=date_key,
+        input_path=input_path,
+        days=days,
+    )
+    snapshots = load_snapshots_from_paths(snapshot_files)
     if not snapshots:
         payload = {
             "status": "no_data",
-            "snapshot_file": str(snapshot_file),
+            "snapshot_files": [str(path) for path in snapshot_files],
             "snapshot_count": 0,
             "message": "No recorded market snapshots found for analysis.",
         }
-        maybe_write_report(config.runtime_dir, payload, date_key=resolve_date_key(config, date_key), enabled=write_report)
+        maybe_write_report(
+            config.runtime_dir,
+            payload,
+            report_key=build_report_key(config, date_key=date_key, days=days),
+            enabled=write_report,
+        )
         return payload
 
     candidates = build_candidate_configs(config)
     current_signature = parameter_signature(config)
-    results = []
-    baseline = None
+    results: list[dict[str, Any]] = []
+    baseline: dict[str, Any] | None = None
     for candidate in candidates:
         result = simulate_candidate(candidate, snapshots)
         result["is_current_config"] = parameter_signature(candidate) == current_signature
         if result["is_current_config"]:
             baseline = result
         results.append(result)
-    results.sort(
-        key=lambda item: (
-            Decimal(str(item["equity_delta_rub"])),
-            Decimal(str(item["net_pnl_rub"])),
-            int(item["trade_count"]),
-        ),
-        reverse=True,
+
+    results.sort(key=sort_key, reverse=True)
+    top_results = results[: max(1, top_n)]
+    recommendation = build_recommendation(
+        top_result=top_results[0] if top_results else None,
+        baseline=baseline,
+        min_trades=min_trades,
     )
 
     payload = {
         "status": "ok",
         "generated_at": datetime.utcnow().isoformat() + "Z",
-        "snapshot_file": str(snapshot_file),
+        "snapshot_files": [str(path) for path in snapshot_files],
         "snapshot_count": len(snapshots),
         "candidate_count": len(results),
-        "top": results[: max(1, top_n)],
+        "top": top_results,
         "baseline": baseline,
+        "recommendation": recommendation,
     }
-    maybe_write_report(config.runtime_dir, payload, date_key=resolve_date_key(config, date_key), enabled=write_report)
+    maybe_write_report(
+        config.runtime_dir,
+        payload,
+        report_key=build_report_key(config, date_key=date_key, days=days),
+        enabled=write_report,
+    )
     return payload
+
+
+def build_report_key(config: ScalperConfig, *, date_key: str | None, days: int) -> str:
+    resolved_date = resolve_date_key(config, date_key)
+    return f"{resolved_date}-d{days}"
+
+
+def resolve_snapshot_files(
+    config: ScalperConfig,
+    *,
+    date_key: str | None,
+    input_path: str | None,
+    days: int,
+) -> list[Path]:
+    if input_path:
+        path = Path(input_path)
+        if path.is_dir():
+            return sorted(path.glob("*.jsonl"))
+        return [path]
+
+    days = max(1, days)
+    market_dir = config.runtime_dir / "market"
+    resolved_date = date.fromisoformat(resolve_date_key(config, date_key))
+    paths: list[Path] = []
+    cursor = resolved_date
+    while len(paths) < days:
+        candidate = snapshot_path_for_date(config.runtime_dir, cursor.isoformat())
+        if candidate.exists():
+            paths.append(candidate)
+        cursor -= timedelta(days=1)
+        if cursor < resolved_date - timedelta(days=21):
+            break
+    paths.sort()
+    return paths
 
 
 def resolve_date_key(config: ScalperConfig, explicit: str | None) -> str:
@@ -80,12 +131,13 @@ def build_candidate_configs(base: ScalperConfig) -> list[ScalperConfig]:
     candidates: list[ScalperConfig] = [base]
     variants: dict[str, list[Any]] = {
         "max_spread_bps": [Decimal("1.5"), Decimal("2.5"), Decimal("4.0"), Decimal("5.5")],
-        "min_imbalance": [Decimal("0.50"), Decimal("0.55"), Decimal("0.60"), Decimal("0.66")],
-        "min_impulse_bps": [Decimal("1.5"), Decimal("2.5"), Decimal("4.0")],
+        "min_imbalance": [Decimal("0.45"), Decimal("0.50"), Decimal("0.55"), Decimal("0.60"), Decimal("0.66")],
+        "min_impulse_bps": [Decimal("1.0"), Decimal("1.5"), Decimal("2.5"), Decimal("4.0")],
         "take_profit_bps": [Decimal("8"), Decimal("10"), Decimal("12"), Decimal("14")],
-        "stop_loss_bps": [Decimal("6"), Decimal("8"), Decimal("10")],
-        "time_stop_seconds": [4.0, 6.0, 8.0],
-        "min_expected_edge_bps": [Decimal("6"), Decimal("8"), Decimal("10")],
+        "stop_loss_bps": [Decimal("4"), Decimal("6"), Decimal("8"), Decimal("10")],
+        "time_stop_seconds": [3.0, 4.0, 6.0, 8.0],
+        "min_expected_edge_bps": [Decimal("4"), Decimal("6"), Decimal("8"), Decimal("10")],
+        "cooldown_seconds": [0.0, 1.0, 3.0, 5.0],
     }
     for field_name, values in variants.items():
         current_value = getattr(base, field_name)
@@ -103,27 +155,30 @@ def build_candidate_configs(base: ScalperConfig) -> list[ScalperConfig]:
             "min_imbalance": Decimal("0.66"),
             "min_impulse_bps": Decimal("4.0"),
             "take_profit_bps": Decimal("12"),
-            "stop_loss_bps": Decimal("6"),
-            "time_stop_seconds": 4.0,
+            "stop_loss_bps": Decimal("4"),
+            "time_stop_seconds": 3.0,
             "min_expected_edge_bps": Decimal("10"),
+            "cooldown_seconds": 5.0,
         },
         {
             "max_spread_bps": Decimal("2.5"),
-            "min_imbalance": Decimal("0.58"),
+            "min_imbalance": Decimal("0.55"),
             "min_impulse_bps": Decimal("2.5"),
             "take_profit_bps": Decimal("10"),
-            "stop_loss_bps": Decimal("8"),
-            "time_stop_seconds": 6.0,
-            "min_expected_edge_bps": Decimal("8"),
+            "stop_loss_bps": Decimal("6"),
+            "time_stop_seconds": 4.0,
+            "min_expected_edge_bps": Decimal("6"),
+            "cooldown_seconds": 1.0,
         },
         {
             "max_spread_bps": Decimal("5.5"),
-            "min_imbalance": Decimal("0.50"),
-            "min_impulse_bps": Decimal("1.5"),
+            "min_imbalance": Decimal("0.45"),
+            "min_impulse_bps": Decimal("1.0"),
             "take_profit_bps": Decimal("8"),
             "stop_loss_bps": Decimal("6"),
             "time_stop_seconds": 8.0,
-            "min_expected_edge_bps": Decimal("6"),
+            "min_expected_edge_bps": Decimal("4"),
+            "cooldown_seconds": 0.0,
         },
     ]
     for overrides in preset_overrides:
@@ -153,11 +208,21 @@ def parameter_signature(config: ScalperConfig) -> str:
             str(config.stop_loss_bps),
             str(config.time_stop_seconds),
             str(config.min_expected_edge_bps),
+            str(config.cooldown_seconds),
         ]
     )
 
 
-def simulate_candidate(config: ScalperConfig, snapshots: list[Any]) -> dict[str, Any]:
+def sort_key(item: dict[str, Any]) -> tuple[Decimal, Decimal, Decimal, int]:
+    return (
+        Decimal(str(item["score"])),
+        Decimal(str(item["equity_delta_rub"])),
+        Decimal(str(item["profit_factor"])),
+        int(item["trade_count"]),
+    )
+
+
+def simulate_candidate(config: ScalperConfig, snapshots: list[MarketSnapshot]) -> dict[str, Any]:
     strategy = ModerateScalpingStrategy(config)
     risk = RiskManager(config)
     executor = PaperExecutor(
@@ -169,6 +234,9 @@ def simulate_candidate(config: ScalperConfig, snapshots: list[Any]) -> dict[str,
     blocked: Counter[str] = Counter()
     latest_bid_by_instrument: dict[str, Decimal] = {}
     signals_detected = 0
+    peak_equity = executor.initial_cash_rub
+    max_drawdown_rub = Decimal("0")
+    equity_curve: list[Decimal] = []
 
     for snapshot in snapshots:
         latest_bid_by_instrument[snapshot.instrument.instrument_id] = snapshot.bid_price
@@ -201,16 +269,28 @@ def simulate_candidate(config: ScalperConfig, snapshots: list[Any]) -> dict[str,
                 positions.pop(snapshot.instrument.instrument_id, None)
                 trades.append(trade)
                 risk.note_closed_trade(trade)
+            equity = executor.equity_rub(list(positions.values()), latest_bid_by_instrument)
+            peak_equity = max(peak_equity, equity)
+            max_drawdown_rub = max(max_drawdown_rub, peak_equity - equity)
+            equity_curve.append(equity)
             continue
 
         entry_allowed, entry_reason = risk.entry_allowed_at(snapshot.at)
         if not entry_allowed:
             blocked[entry_reason] += 1
+            equity = executor.equity_rub(list(positions.values()), latest_bid_by_instrument)
+            peak_equity = max(peak_equity, equity)
+            max_drawdown_rub = max(max_drawdown_rub, peak_equity - equity)
+            equity_curve.append(equity)
             continue
 
         signal, block_reason, _ = strategy.diagnose_entry(snapshot, has_open_position=False)
         if signal is None:
             blocked[block_reason] += 1
+            equity = executor.equity_rub(list(positions.values()), latest_bid_by_instrument)
+            peak_equity = max(peak_equity, equity)
+            max_drawdown_rub = max(max_drawdown_rub, peak_equity - equity)
+            equity_curve.append(equity)
             continue
 
         quantity_lots, planned_notional_rub, sizing_reason = executor.plan_entry(
@@ -223,6 +303,10 @@ def simulate_candidate(config: ScalperConfig, snapshots: list[Any]) -> dict[str,
         )
         if quantity_lots <= 0:
             blocked[sizing_reason] += 1
+            equity = executor.equity_rub(list(positions.values()), latest_bid_by_instrument)
+            peak_equity = max(peak_equity, equity)
+            max_drawdown_rub = max(max_drawdown_rub, peak_equity - equity)
+            equity_curve.append(equity)
             continue
 
         can_open, reason = risk.can_open(
@@ -232,6 +316,10 @@ def simulate_candidate(config: ScalperConfig, snapshots: list[Any]) -> dict[str,
         )
         if not can_open:
             blocked[reason] += 1
+            equity = executor.equity_rub(list(positions.values()), latest_bid_by_instrument)
+            peak_equity = max(peak_equity, equity)
+            max_drawdown_rub = max(max_drawdown_rub, peak_equity - equity)
+            equity_curve.append(equity)
             continue
 
         signals_detected += 1
@@ -249,6 +337,10 @@ def simulate_candidate(config: ScalperConfig, snapshots: list[Any]) -> dict[str,
             reason=signal.reason,
             metadata={"mode": "paper"},
         )
+        equity = executor.equity_rub(list(positions.values()), latest_bid_by_instrument)
+        peak_equity = max(peak_equity, equity)
+        max_drawdown_rub = max(max_drawdown_rub, peak_equity - equity)
+        equity_curve.append(equity)
 
     market_value = executor.market_value_rub(list(positions.values()), latest_bid_by_instrument)
     unrealized_pnl = executor.unrealized_pnl_rub(list(positions.values()), latest_bid_by_instrument)
@@ -264,8 +356,22 @@ def simulate_candidate(config: ScalperConfig, snapshots: list[Any]) -> dict[str,
         ),
         start=Decimal("0"),
     )
+    gross_wins = sum((trade.net_pnl_rub for trade in trades if trade.net_pnl_rub > 0), start=Decimal("0"))
+    gross_losses = sum((-trade.net_pnl_rub for trade in trades if trade.net_pnl_rub < 0), start=Decimal("0"))
     wins = sum(1 for trade in trades if trade.net_pnl_rub > 0)
     losses = sum(1 for trade in trades if trade.net_pnl_rub < 0)
+    average_trade = (
+        risk.realized_pnl_rub / Decimal(len(trades))
+        if trades
+        else Decimal("0")
+    )
+    profit_factor = gross_wins / gross_losses if gross_losses > 0 else (Decimal("999") if gross_wins > 0 else Decimal("0"))
+    expectancy_bps = (
+        (risk.realized_pnl_rub / turnover) * Decimal("10000")
+        if turnover > 0
+        else Decimal("0")
+    )
+    score = equity_delta - (max_drawdown_rub * Decimal("0.60")) + (Decimal(len(trades)) * Decimal("2"))
 
     return {
         "parameters": {
@@ -276,6 +382,7 @@ def simulate_candidate(config: ScalperConfig, snapshots: list[Any]) -> dict[str,
             "stop_loss_bps": str(config.stop_loss_bps),
             "time_stop_seconds": config.time_stop_seconds,
             "min_expected_edge_bps": str(config.min_expected_edge_bps),
+            "cooldown_seconds": config.cooldown_seconds,
         },
         "trade_count": len(trades),
         "wins": wins,
@@ -289,15 +396,79 @@ def simulate_candidate(config: ScalperConfig, snapshots: list[Any]) -> dict[str,
         "turnover_rub": str(turnover),
         "open_positions": len(positions),
         "blocked_top": dict(blocked.most_common(5)),
+        "max_drawdown_rub": str(max_drawdown_rub),
+        "profit_factor": str(profit_factor),
+        "expectancy_bps": str(expectancy_bps),
+        "average_trade_rub": str(average_trade),
+        "score": str(score),
+        "market_value_rub": str(market_value),
     }
 
 
-def maybe_write_report(runtime_dir: Path, payload: dict[str, Any], *, date_key: str, enabled: bool) -> None:
+def build_recommendation(
+    *,
+    top_result: dict[str, Any] | None,
+    baseline: dict[str, Any] | None,
+    min_trades: int,
+) -> dict[str, Any]:
+    if top_result is None:
+        return {"eligible": False, "reason": "no_top_result"}
+
+    top_equity = Decimal(str(top_result["equity_delta_rub"]))
+    top_drawdown = Decimal(str(top_result["max_drawdown_rub"]))
+    top_profit_factor = Decimal(str(top_result["profit_factor"]))
+    baseline_equity = Decimal(str((baseline or {}).get("equity_delta_rub", "0")))
+
+    if top_result.get("is_current_config"):
+        return {
+            "eligible": False,
+            "reason": "current_config_already_best",
+            "candidate": top_result,
+        }
+    if int(top_result["trade_count"]) < min_trades:
+        return {
+            "eligible": False,
+            "reason": "not_enough_trades",
+            "candidate": top_result,
+        }
+    if top_equity <= 0:
+        return {
+            "eligible": False,
+            "reason": "candidate_not_profitable",
+            "candidate": top_result,
+        }
+    if top_profit_factor <= Decimal("1.05"):
+        return {
+            "eligible": False,
+            "reason": "profit_factor_too_low",
+            "candidate": top_result,
+        }
+    if top_drawdown > top_equity:
+        return {
+            "eligible": False,
+            "reason": "drawdown_exceeds_profit",
+            "candidate": top_result,
+        }
+    if top_equity <= baseline_equity:
+        return {
+            "eligible": False,
+            "reason": "not_better_than_baseline",
+            "candidate": top_result,
+        }
+    return {
+        "eligible": True,
+        "reason": "promote_candidate",
+        "candidate": top_result,
+        "delta_vs_baseline_rub": str(top_equity - baseline_equity),
+    }
+
+
+def maybe_write_report(runtime_dir: Path, payload: dict[str, Any], *, report_key: str, enabled: bool) -> None:
     if not enabled:
         return
     optimizer_dir = runtime_dir / "optimizer"
     optimizer_dir.mkdir(parents=True, exist_ok=True)
-    report_path = optimizer_dir / f"optimize-{date_key}.json"
+    report_path = optimizer_dir / f"optimize-{report_key}.json"
     latest_path = optimizer_dir / "latest.json"
     body = json.dumps(payload, ensure_ascii=False, indent=2)
     report_path.write_text(body, encoding="utf-8")

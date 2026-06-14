@@ -139,6 +139,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--date", default=None)
     parser.add_argument("--input", default=None)
     parser.add_argument("--top", type=int, default=10)
+    parser.add_argument("--days", type=int, default=int(os.getenv("SCALPER_OPTIMIZER_DAYS", "5")))
+    parser.add_argument("--min-trades", type=int, default=int(os.getenv("SCALPER_OPTIMIZER_MIN_TRADES", "5")))
     parser.add_argument("--write-report", action="store_true")
     return parser
 

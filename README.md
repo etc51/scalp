@@ -279,15 +279,17 @@ sudo systemctl start moex-scalper-update.service
 Команда анализа:
 
 ```bash
-python3 -m moex_scalper optimize --date 2026-06-15 --write-report
+python3 -m moex_scalper optimize --days 5 --write-report
 ```
 
 Что делает:
 
 - загружает накопленные market snapshots за день
+- может смотреть rolling history по нескольким торговым дням
 - прогоняет набор candidate-конфигураций стратегии
-- сравнивает их по `equity_delta_rub`, `net_pnl_rub`, `trade_count`
+- сравнивает их по `score`, `equity_delta_rub`, `max_drawdown_rub`, `profit_factor`, `trade_count`
 - пишет отчет в `runtime/optimizer/latest.json`
+- добавляет `recommendation`, если найден конфиг, который достаточно лучше baseline
 
 На сервере это можно запускать и вручную, и автоматически:
 

@@ -62,6 +62,8 @@ def main() -> int:
             date_key=args.date,
             input_path=args.input,
             top_n=args.top,
+            days=args.days,
+            min_trades=args.min_trades,
             write_report=args.write_report,
         )
         print(json.dumps(payload, ensure_ascii=False, indent=2))

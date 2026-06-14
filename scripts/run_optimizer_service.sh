@@ -35,6 +35,10 @@ done < .env
 
 mkdir -p runtime
 
-ANALYSIS_DATE="$(TZ="${SCALPER_TIMEZONE:-Europe/Moscow}" date +%F)"
+OPTIMIZER_DAYS="${SCALPER_OPTIMIZER_DAYS:-5}"
+OPTIMIZER_MIN_TRADES="${SCALPER_OPTIMIZER_MIN_TRADES:-5}"
 
-exec .venv/bin/python3 -m moex_scalper optimize --date "$ANALYSIS_DATE" --write-report
+exec .venv/bin/python3 -m moex_scalper optimize \
+  --days "$OPTIMIZER_DAYS" \
+  --min-trades "$OPTIMIZER_MIN_TRADES" \
+  --write-report

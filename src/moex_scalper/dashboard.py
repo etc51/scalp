@@ -288,6 +288,10 @@ HTML = """<!doctype html>
           ["TP / SL", `${report.parameters?.take_profit_bps ?? "—"} / ${report.parameters?.stop_loss_bps ?? "—"}`],
           ["Time Stop", report.parameters?.time_stop_seconds ?? "—"],
           ["Expected Edge", report.parameters?.min_expected_edge_bps ?? "—"],
+          ["Cooldown", report.parameters?.cooldown_seconds ?? "—"],
+          ["Profit Factor", fmtNum(report.profit_factor, 2)],
+          ["Max Drawdown", fmtRub(report.max_drawdown_rub)],
+          ["Score", fmtNum(report.score, 2)],
         ],
       );
     };
@@ -300,6 +304,7 @@ HTML = """<!doctype html>
         const overallStats = state.stats?.overall || null;
         const optimizerTop = state.optimizer?.top?.[0] || null;
         const optimizerBaseline = state.optimizer?.baseline || null;
+        const optimizerRecommendation = state.optimizer?.recommendation || null;
 
         document.getElementById("statusText").textContent = "online";
         document.getElementById("mode").textContent = `${state.mode || "-"} / ${state.position_sizing_mode || "-"}`;
@@ -365,7 +370,10 @@ HTML = """<!doctype html>
 
         document.getElementById("todaySummaryWrap").innerHTML = renderSummary(todayStats);
         document.getElementById("overallSummaryWrap").innerHTML = renderSummary(overallStats);
-        document.getElementById("optimizerTopWrap").innerHTML = renderOptimizer(optimizerTop);
+        const recommendationLine = optimizerRecommendation
+          ? `<div class="empty">eligible: ${optimizerRecommendation.eligible} | reason: ${optimizerRecommendation.reason}${optimizerRecommendation.delta_vs_baseline_rub ? ` | delta vs baseline: ${fmtRub(optimizerRecommendation.delta_vs_baseline_rub)}` : ""}</div>`
+          : "";
+        document.getElementById("optimizerTopWrap").innerHTML = recommendationLine + renderOptimizer(optimizerTop);
         document.getElementById("optimizerBaselineWrap").innerHTML = renderOptimizer(optimizerBaseline);
       } catch (error) {
         document.getElementById("statusText").textContent = "waiting for state";

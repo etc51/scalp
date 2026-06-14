@@ -76,3 +76,11 @@ def load_snapshots(path: Path) -> list[MarketSnapshot]:
                 )
             )
     return snapshots
+
+
+def load_snapshots_from_paths(paths: list[Path]) -> list[MarketSnapshot]:
+    combined: list[MarketSnapshot] = []
+    for path in paths:
+        combined.extend(load_snapshots(path))
+    combined.sort(key=lambda item: item.at)
+    return combined
