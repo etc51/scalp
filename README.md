@@ -184,6 +184,13 @@ python3 -m moex_scalper doctor --mode paper
 python3 -m moex_scalper run --mode paper
 ```
 
+Version-controlled paper risk profile:
+
+- tracked file `config/paper_profile.env` now fixes the current paper contour at `300000 RUB` and `1.2x` max gross leverage
+- this file contains no secrets and is intended to be changed from GitHub
+- `.env` still stores token, account and machine-local settings
+- on startup the bot loads `.env` first and then applies the tracked paper profile, so nightly GitHub auto-updates can change budget/leverage without touching secrets
+
 Осторожный live-запуск:
 
 ```bash

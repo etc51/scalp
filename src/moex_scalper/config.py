@@ -11,15 +11,53 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from .commission import DEFAULT_PREMIUM_SHARE_COMMISSION_BPS
 
 
-def load_dotenv(path: Path) -> None:
+TRACKED_PAPER_PROFILE_PATH = Path("config") / "paper_profile.env"
+TRACKED_PAPER_PROFILE_KEYS = frozenset(
+    {
+        "SCALPER_PAPER_INITIAL_CASH_RUB",
+        "SCALPER_PAPER_MAX_GROSS_LEVERAGE",
+    }
+)
+
+
+def load_dotenv(
+    path: Path,
+    *,
+    override: bool = False,
+    protected_keys: set[str] | None = None,
+    allowed_keys: set[str] | frozenset[str] | None = None,
+) -> None:
     if not path.exists():
         return
+    protected = protected_keys or set()
     for raw_line in path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
-        os.environ.setdefault(key.strip(), value.strip().strip("'").strip('"'))
+        normalized_key = key.strip()
+        if allowed_keys is not None and normalized_key not in allowed_keys:
+            continue
+        if override:
+            if normalized_key in protected:
+                continue
+            os.environ[normalized_key] = value.strip().strip("'").strip('"')
+            continue
+        os.environ.setdefault(normalized_key, value.strip().strip("'").strip('"'))
+
+
+def load_project_env(
+    dotenv_path: Path = Path(".env"),
+    tracked_profile_path: Path = TRACKED_PAPER_PROFILE_PATH,
+) -> None:
+    protected_keys = set(os.environ)
+    load_dotenv(dotenv_path)
+    load_dotenv(
+        tracked_profile_path,
+        override=True,
+        protected_keys=protected_keys,
+        allowed_keys=TRACKED_PAPER_PROFILE_KEYS,
+    )
 
 
 def parse_bool(value: str | None, default: bool = False) -> bool:

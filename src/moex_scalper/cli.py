@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 from .analysis import analyze_trades
-from .config import ScalperConfig, build_parser, load_config, load_dotenv
+from .config import ScalperConfig, build_parser, load_config, load_project_env
 from .dashboard import serve_dashboard
 from .doctor import build_doctor_payload, write_doctor_report
 from .optimizer import optimize_parameters
@@ -25,7 +25,7 @@ async def run_doctor(config: ScalperConfig) -> int:
 
 
 def main() -> int:
-    load_dotenv(Path(".env"))
+    load_project_env()
     parser = build_parser()
     args = parser.parse_args()
 
