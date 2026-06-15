@@ -458,20 +458,30 @@ def score_restrictions_action(
     score = Decimal("0")
     source = str(payload.get("candidate_source") or "").strip()
     active = dict(payload.get("proposed_restrictions") or {})
-    affected_count = len(list(active.get("disabled_tickers") or [])) + len(list(active.get("blocked_entry_hours") or []))
+    disabled_tickers = len(list(active.get("disabled_tickers") or []))
+    blocked_entry_hours = len(list(active.get("blocked_entry_hours") or []))
+    blocked_ticker_hours = len(list(active.get("blocked_ticker_hours") or []))
     breakdown = dict(payload.get("candidate_breakdown") or {})
 
-    if source == "analysis":
+    if source in {"analysis", "analysis_ticker_hour"}:
         score += Decimal("70")
-        details["score_components"].append("analysis_source=70")
-        details["selection_reason"] = "analysis_restriction"
+        details["score_components"].append(f"{source}=70")
+        details["selection_reason"] = (
+            "analysis_ticker_hour_restriction"
+            if source == "analysis_ticker_hour"
+            else "analysis_restriction"
+        )
         trade_count = int(((payload.get("analysis") or {}).get("trade_count", 0)) or 0)
         trade_score = min(Decimal(trade_count), Decimal("20"))
         score += trade_score
         details["score_components"].append(f"analysis_trades={_fmt_decimal(trade_score)}")
         total_loss = sum(
             max(-_decimal(item.get("net_pnl_rub"), default="0"), Decimal("0"))
-            for item in list(breakdown.get("tickers") or []) + list(breakdown.get("hours") or [])
+            for item in (
+                list(breakdown.get("ticker_hours") or [])
+                + list(breakdown.get("tickers") or [])
+                + list(breakdown.get("hours") or [])
+            )
         )
         loss_score = min(total_loss / Decimal("100"), Decimal("15"))
         score += loss_score
@@ -497,7 +507,9 @@ def score_restrictions_action(
     else:
         details["selection_reason"] = "restrictions_ready"
 
-    scope_penalty = max(0, affected_count - 1) * 8
+    scope_penalty = max(0, disabled_tickers - 1) * 8
+    scope_penalty += max(0, blocked_entry_hours - 1) * 8
+    scope_penalty += max(0, blocked_ticker_hours - 1) * 4
     if scope_penalty:
         score -= Decimal(scope_penalty)
         details["score_components"].append(f"scope_penalty=-{scope_penalty}")

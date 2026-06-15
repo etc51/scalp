@@ -575,9 +575,11 @@ HTML = """<!doctype html>
       const proposed = restrictions?.proposed_restrictions || {};
       const activeTickers = active.disabled_tickers || [];
       const activeHours = active.blocked_entry_hours || [];
+      const activeTickerHours = active.blocked_ticker_hours || [];
       const proposedTickers = proposed.disabled_tickers || [];
       const proposedHours = proposed.blocked_entry_hours || [];
-      if (!restrictions && !activeTickers.length && !activeHours.length) {
+      const proposedTickerHours = proposed.blocked_ticker_hours || [];
+      if (!restrictions && !activeTickers.length && !activeHours.length && !activeTickerHours.length) {
         return '<div class="empty">Пока нет restrictions-report</div>';
       }
       return renderTable(
@@ -590,8 +592,10 @@ HTML = """<!doctype html>
           ["Next Action", restrictions?.next_action || "—"],
           ["Candidate Source", restrictions?.candidate_source || "—"],
           ["Reasons", (restrictions?.reasons || []).join(", ") || "—"],
+          ["Active Ticker+Hour", activeTickerHours.join(", ") || "—"],
           ["Active Tickers", activeTickers.join(", ") || "—"],
           ["Active Hours", activeHours.map((hour) => `${hour}:00`).join(", ") || "—"],
+          ["Proposed Ticker+Hour", proposedTickerHours.join(", ") || "—"],
           ["Proposed Tickers", proposedTickers.join(", ") || "—"],
           ["Proposed Hours", proposedHours.map((hour) => `${hour}:00`).join(", ") || "—"],
           ["Clears Existing", restrictions ? String(restrictions.clears_existing_restrictions) : "—"],
@@ -955,6 +959,7 @@ def _default_payload() -> dict[str, object]:
         "active_restrictions": {
             "disabled_tickers": [],
             "blocked_entry_hours": [],
+            "blocked_ticker_hours": [],
             "updated_at": None,
             "source": None,
         },

@@ -14,6 +14,7 @@ from .config import ScalperConfig, parse_bool
 class EntryRestrictions:
     disabled_tickers: tuple[str, ...] = ()
     blocked_entry_hours: tuple[int, ...] = ()
+    blocked_ticker_hours: tuple[str, ...] = ()
     updated_at: str | None = None
     source: str | None = None
 
@@ -46,6 +47,7 @@ def build_restrictions(
     min_total_trades = int(_env_value("SCALPER_RESTRICTION_MIN_TRADES", "8"))
     min_bucket_trades = int(_env_value("SCALPER_RESTRICTION_MIN_BUCKET_TRADES", "2"))
     min_loss_rub = Decimal(_env_value("SCALPER_RESTRICTION_MIN_LOSS_RUB", "0"))
+    max_ticker_hours = int(_env_value("SCALPER_RESTRICTION_MAX_TICKER_HOURS", "2"))
     max_tickers = int(_env_value("SCALPER_RESTRICTION_MAX_TICKERS", "1"))
     max_hours = int(_env_value("SCALPER_RESTRICTION_MAX_HOURS", "1"))
     block_hours_enabled = parse_bool(_env_value("SCALPER_RESTRICTION_BLOCK_HOURS", "1"), default=True)
@@ -90,20 +92,29 @@ def build_restrictions(
 
     ticker_candidates: list[dict[str, Any]] = []
     hour_candidates: list[dict[str, Any]] = []
+    ticker_hour_candidates: list[dict[str, Any]] = []
     candidate_source: str | None = None
     if not reasons and not analysis_reasons and analysis_payload is not None:
-        candidate_source = "analysis"
-        ticker_candidates = select_negative_buckets(
-            ((analysis_payload.get("by_ticker") or {}).get("worst") or []),
+        ticker_hour_candidates = select_negative_buckets(
+            ((analysis_payload.get("by_ticker_hour") or {}).get("worst") or []),
             min_bucket_trades=min_bucket_trades,
             min_loss_rub=min_loss_rub,
-        )[:max(0, max_tickers)]
-        if block_hours_enabled:
-            hour_candidates = select_negative_buckets(
-                ((analysis_payload.get("by_hour") or {}).get("worst") or []),
+        )[:max(0, max_ticker_hours)]
+        if ticker_hour_candidates:
+            candidate_source = "analysis_ticker_hour"
+        else:
+            candidate_source = "analysis"
+            ticker_candidates = select_negative_buckets(
+                ((analysis_payload.get("by_ticker") or {}).get("worst") or []),
                 min_bucket_trades=min_bucket_trades,
                 min_loss_rub=min_loss_rub,
-            )[:max(0, max_hours)]
+            )[:max(0, max_tickers)]
+            if block_hours_enabled:
+                hour_candidates = select_negative_buckets(
+                    ((analysis_payload.get("by_hour") or {}).get("worst") or []),
+                    min_bucket_trades=min_bucket_trades,
+                    min_loss_rub=min_loss_rub,
+                )[:max(0, max_hours)]
     elif not reasons and not coverage_reasons and optimizer_payload is not None:
         candidate_source = "optimizer_signal_coverage"
         ticker_candidates = select_coverage_buckets(
@@ -129,15 +140,31 @@ def build_restrictions(
     proposed = EntryRestrictions(
         disabled_tickers=tuple(item["key"] for item in ticker_candidates),
         blocked_entry_hours=tuple(_hour_key_to_int(item["key"]) for item in hour_candidates),
+        blocked_ticker_hours=tuple(
+            _normalize_ticker_hour_key(str(item["key"]))
+            for item in ticker_hour_candidates
+        ),
         updated_at=datetime.utcnow().isoformat() + "Z",
         source=candidate_source,
     )
     current_signature = restrictions_signature(current_active)
     proposed_signature = restrictions_signature(proposed)
-    has_current_restrictions = bool(current_active.disabled_tickers or current_active.blocked_entry_hours)
-    has_proposed_restrictions = bool(proposed.disabled_tickers or proposed.blocked_entry_hours)
+    has_current_restrictions = bool(
+        current_active.disabled_tickers
+        or current_active.blocked_entry_hours
+        or current_active.blocked_ticker_hours
+    )
+    has_proposed_restrictions = bool(
+        proposed.disabled_tickers
+        or proposed.blocked_entry_hours
+        or proposed.blocked_ticker_hours
+    )
     if not reasons and not has_proposed_restrictions and not has_current_restrictions:
-        reasons.append("no_negative_buckets" if candidate_source == "analysis" else "no_coverage_outliers")
+        reasons.append(
+            "no_negative_buckets"
+            if candidate_source in {"analysis", "analysis_ticker_hour"}
+            else "no_coverage_outliers"
+        )
     if not reasons and current_signature == proposed_signature:
         reasons.append("candidate_already_applied")
 
@@ -182,6 +209,7 @@ def build_restrictions(
         "active_restrictions": serialize_restrictions(active_after),
         "clears_existing_restrictions": bool(has_current_restrictions and not has_proposed_restrictions),
         "candidate_breakdown": {
+            "ticker_hours": ticker_hour_candidates,
             "tickers": ticker_candidates,
             "hours": hour_candidates,
         },
@@ -208,6 +236,11 @@ def load_active_restrictions(runtime_dir: Path) -> EntryRestrictions:
             for item in list(payload.get("blocked_entry_hours", []))
             if str(item).strip() and str(item).isdigit()
         ),
+        blocked_ticker_hours=tuple(
+            _normalize_ticker_hour_key(str(item))
+            for item in list(payload.get("blocked_ticker_hours", []))
+            if str(item).strip()
+        ),
         updated_at=str(payload.get("updated_at")) if payload.get("updated_at") else None,
         source=str(payload.get("source")) if payload.get("source") else None,
     )
@@ -217,6 +250,7 @@ def serialize_restrictions(restrictions: EntryRestrictions) -> dict[str, Any]:
     return {
         "disabled_tickers": list(restrictions.disabled_tickers),
         "blocked_entry_hours": list(restrictions.blocked_entry_hours),
+        "blocked_ticker_hours": list(restrictions.blocked_ticker_hours),
         "updated_at": restrictions.updated_at,
         "source": restrictions.source,
     }
@@ -228,6 +262,9 @@ def restriction_reason(
     ticker: str,
     local_hour: int,
 ) -> str | None:
+    ticker_hour_key = _build_ticker_hour_key(ticker, local_hour)
+    if ticker_hour_key in restrictions.blocked_ticker_hours:
+        return "restricted_ticker_hour"
     if ticker.upper() in restrictions.disabled_tickers:
         return "restricted_ticker"
     if local_hour in restrictions.blocked_entry_hours:
@@ -240,6 +277,8 @@ def restrictions_signature(restrictions: EntryRestrictions) -> str:
         ",".join(sorted(restrictions.disabled_tickers))
         + "|"
         + ",".join(str(hour) for hour in sorted(restrictions.blocked_entry_hours))
+        + "|"
+        + ",".join(sorted(restrictions.blocked_ticker_hours))
     )
 
 
@@ -368,6 +407,17 @@ def _entry_window_open(config: ScalperConfig) -> bool:
 
 def _hour_key_to_int(value: str) -> int:
     return int(str(value).split(":", 1)[0])
+
+
+def _build_ticker_hour_key(ticker: str, hour: int) -> str:
+    return f"{ticker.upper()}@{hour:02d}:00"
+
+
+def _normalize_ticker_hour_key(value: str) -> str:
+    ticker, _, hour = str(value).strip().upper().partition("@")
+    if not ticker or not hour:
+        return str(value).strip().upper()
+    return _build_ticker_hour_key(ticker, _hour_key_to_int(hour))
 
 
 def _parse_csv(value: str | None) -> list[str]:

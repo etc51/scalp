@@ -100,9 +100,10 @@ class ScalperRuntime:
             self.config.entry_end_time.isoformat(timespec="minutes"),
         )
         LOGGER.info(
-            "Active restrictions tickers=%s hours=%s",
+            "Active restrictions tickers=%s hours=%s ticker_hours=%s",
             ",".join(self.active_restrictions.disabled_tickers) or "none",
             ",".join(str(hour) for hour in self.active_restrictions.blocked_entry_hours) or "none",
+            ",".join(self.active_restrictions.blocked_ticker_hours) or "none",
         )
         LOGGER.info(
             "Intraday guard ticker_loss_limit=%s consecutive_losses=%s consecutive_time_stop_losses=%s session_max_guarded_tickers=%s",

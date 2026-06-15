@@ -40,6 +40,7 @@ def build_daily_summary(
         "watchlist": list((state or {}).get("watchlist") or []),
         "strategy_diagnostics": (state or {}).get("strategy_diagnostics"),
         "risk_controls": (state or {}).get("risk_controls"),
+        "active_restrictions": (state or {}).get("active_restrictions"),
         "today": {
             "trade_count": int(today_stats.get("trade_count", 0) or 0),
             "net_pnl_rub": today_stats.get("net_pnl_rub"),
@@ -140,6 +141,7 @@ def build_focus(payload: dict[str, Any]) -> list[str]:
     watchdog = payload.get("watchdog") or {}
     strategy_diagnostics = payload.get("strategy_diagnostics") or {}
     risk_controls = payload.get("risk_controls") or {}
+    active_restrictions = payload.get("active_restrictions") or {}
     active_guards = list(risk_controls.get("active_ticker_guards") or [])
     active_session_guards = list(risk_controls.get("active_session_guards") or [])
 
@@ -205,6 +207,13 @@ def build_focus(payload: dict[str, Any]) -> list[str]:
             for item in active_session_guards
         )
         focus.append(f"Сессия поставлена на паузу по session-guard: {session_guard_summary}.")
+    active_ticker_hours = list(active_restrictions.get("blocked_ticker_hours") or [])
+    if active_ticker_hours:
+        focus.append(
+            "Активные точечные restrictions по ticker+hour: "
+            + ", ".join(str(item) for item in active_ticker_hours[:3])
+            + "."
+        )
     if analysis.get("assessment") == "insufficient_sample":
         focus.append("Trade sample пока недостаточен для устойчивых выводов.")
 

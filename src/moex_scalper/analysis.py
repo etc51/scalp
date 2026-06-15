@@ -135,13 +135,20 @@ def analyze_trades(
     ticker_stats = build_breakdown(filtered, key_fn=lambda item: item.ticker)
     hour_stats = build_breakdown(
         filtered,
-        key_fn=lambda item: item.closed_at.astimezone(config.timezone).strftime("%H:00"),
+        key_fn=lambda item: item.opened_at.astimezone(config.timezone).strftime("%H:00"),
+    )
+    ticker_hour_stats = build_breakdown(
+        filtered,
+        key_fn=lambda item: (
+            f"{item.ticker}@{item.opened_at.astimezone(config.timezone).strftime('%H:00')}"
+        ),
     )
     exit_reason_stats = build_breakdown(filtered, key_fn=lambda item: item.exit_reason)
     focus = build_focus(
         summary,
         ticker_stats=ticker_stats,
         hour_stats=hour_stats,
+        ticker_hour_stats=ticker_hour_stats,
         exit_reason_stats=exit_reason_stats,
     )
 
@@ -165,6 +172,7 @@ def analyze_trades(
         "focus": focus,
         "by_ticker": build_ranked_section(ticker_stats, top_n=top_n),
         "by_hour": build_ranked_section(hour_stats, top_n=top_n),
+        "by_ticker_hour": build_ranked_section(ticker_hour_stats, top_n=top_n),
         "by_exit_reason": build_ranked_section(exit_reason_stats, top_n=top_n),
         "largest_losses": [
             serialize_trade_record(record)
@@ -339,6 +347,7 @@ def build_focus(
     *,
     ticker_stats: list[dict[str, Any]],
     hour_stats: list[dict[str, Any]],
+    ticker_hour_stats: list[dict[str, Any]],
     exit_reason_stats: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     focus: list[dict[str, Any]] = []
@@ -383,6 +392,25 @@ def build_focus(
             }
         )
 
+    worst_ticker_hour = next(
+        (
+            item
+            for item in sorted(ticker_hour_stats, key=lambda row: Decimal(str(row["net_pnl_rub"])))
+            if _decimal(item["net_pnl_rub"]) < 0
+        ),
+        None,
+    )
+    if worst_ticker_hour is not None:
+        focus.append(
+            {
+                "type": "ticker_hour",
+                "message": f"Самая слабая связка окна: {worst_ticker_hour['key']}.",
+                "key": worst_ticker_hour["key"],
+                "net_pnl_rub": worst_ticker_hour["net_pnl_rub"],
+                "trade_count": worst_ticker_hour["trade_count"],
+            }
+        )
+
     worst_hour = next(
         (
             item
@@ -395,7 +423,7 @@ def build_focus(
         focus.append(
             {
                 "type": "hour",
-                "message": f"Самый слабый час закрытия: {worst_hour['key']}.",
+                "message": f"Самый слабый час входа: {worst_hour['key']}.",
                 "key": worst_hour["key"],
                 "net_pnl_rub": worst_hour["net_pnl_rub"],
                 "trade_count": worst_hour["trade_count"],
@@ -421,7 +449,7 @@ def build_focus(
             }
         )
 
-    return focus[:4]
+    return focus[:5]
 
 
 def classify_assessment(summary: dict[str, Any]) -> str:
