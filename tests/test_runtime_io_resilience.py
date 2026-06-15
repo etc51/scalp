@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
-from moex_scalper.analysis import load_shadow_records, load_trade_records
+from moex_scalper.analysis import load_shadow_missing_records, load_shadow_records, load_trade_records
 from moex_scalper.market_history import load_snapshots
 from moex_scalper.persistence import PaperRuntimeStore
 
@@ -106,6 +106,33 @@ class RuntimeIoResilienceTests(unittest.TestCase):
             self.assertEqual(records[0].ticker, "SBER")
             self.assertEqual(records[0].delta_net_pnl_rub, Decimal("2"))
 
+    def test_load_shadow_missing_records_skips_corrupt_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "shadow_missing.jsonl"
+            good = {
+                "instrument_id": "instrument-sber",
+                "ticker": "SBER",
+                "side": "buy",
+                "quantity_lots": 1,
+                "opened_at": "2026-06-15T10:15:00+00:00",
+                "real_closed_at": "2026-06-15T10:15:06+00:00",
+                "real_exit_reason": "time_stop",
+                "issue_at": "2026-06-15T10:17:30+00:00",
+                "missing_recorded_at": "2026-06-15T10:17:30+00:00",
+                "missing_reason": "expired_day_roll",
+                "overdue_seconds": 24.0,
+            }
+            path.write_text(
+                json.dumps(good, ensure_ascii=False) + "\n" + "{broken json}\n",
+                encoding="utf-8",
+            )
+
+            records = load_shadow_missing_records(path)
+
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0].ticker, "SBER")
+            self.assertEqual(records[0].missing_reason, "expired_day_roll")
+
     def test_corrupt_summary_and_session_fallback_to_empty(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             runtime_dir = Path(tmpdir)
@@ -158,6 +185,35 @@ class RuntimeIoResilienceTests(unittest.TestCase):
             self.assertEqual(stats["today"]["improved_count"], 1)
             self.assertEqual(stats["today"]["delta_net_pnl_rub"], "2")
             self.assertEqual(stats["overall"]["observation_count"], 1)
+            self.assertEqual(stats["overall"]["last_ticker"], "SBER")
+
+    def test_shadow_issue_stats_append_and_load(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_dir = Path(tmpdir)
+            store = PaperRuntimeStore(runtime_dir, timezone.utc)
+
+            store.append_shadow_issue(
+                {
+                    "instrument_id": "instrument-sber",
+                    "ticker": "SBER",
+                    "side": "buy",
+                    "quantity_lots": 1,
+                    "opened_at": "2026-06-15T10:15:00+00:00",
+                    "real_closed_at": "2026-06-15T10:15:06+00:00",
+                    "real_exit_reason": "time_stop",
+                    "shadow_due_at": "2026-06-15T10:17:06+00:00",
+                    "issue_at": "2026-06-15T10:18:00+00:00",
+                    "missing_recorded_at": "2026-06-15T10:18:00+00:00",
+                    "missing_reason": "expired_day_roll",
+                    "overdue_seconds": 54.0,
+                }
+            )
+
+            stats = store.load_shadow_issue_stats("2026-06-15")
+
+            self.assertEqual(stats["today"]["issue_count"], 1)
+            self.assertEqual(stats["today"]["reasons"]["expired_day_roll"], 1)
+            self.assertEqual(stats["overall"]["issue_count"], 1)
             self.assertEqual(stats["overall"]["last_ticker"], "SBER")
 
 

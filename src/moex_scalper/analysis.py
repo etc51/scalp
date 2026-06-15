@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import re
+from bisect import bisect_left
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -10,6 +12,21 @@ from typing import Any, Callable
 
 from .config import ScalperConfig
 from .entry_window import moment_in_entry_window
+from .indicators import compute_indicator_state
+from .market_history import load_snapshots_from_paths, snapshot_path_for_date
+from .strategy_overlay import MinuteBar, compute_overlay_indicator_state
+
+
+SHADOW_MIN_OBSERVATIONS_FOR_FOCUS = 5
+ENTRY_TAG_PRIORITY = (
+    "fee_churn",
+    "micro_chop",
+    "counter_regime",
+    "late_session_fade",
+    "trend_follow",
+    "unclassified",
+)
+ENTRY_REASON_PATTERN = re.compile(r"([a-zA-Z_]+)=([-0-9.]+|[a-zA-Z_]+)")
 
 
 def _decimal(value: str | int | float | Decimal | None, default: str = "0") -> Decimal:
@@ -68,6 +85,36 @@ class ShadowTradeRecord:
     shadow_result: str
 
 
+@dataclass(slots=True, frozen=True)
+class ShadowMissingRecord:
+    instrument_id: str
+    ticker: str
+    side: str
+    quantity_lots: int
+    opened_at: datetime
+    real_closed_at: datetime
+    real_exit_reason: str
+    missing_recorded_at: datetime
+    missing_reason: str
+
+
+@dataclass(slots=True, frozen=True)
+class EntryForensicsObservation:
+    trade: TradeRecord
+    entry_profile: str
+    primary_tag: str
+    tags: tuple[str, ...]
+    context_available: bool
+    trend_label: str
+    spread_bps: Decimal | None
+    impulse_bps: Decimal | None
+    imbalance: Decimal | None
+    net_tp_bps: Decimal | None
+    net_tp_after_costs_bps: Decimal | None
+    atr14_bps: Decimal | None
+    session_twap_gap_bps: Decimal | None
+
+
 def analyze_trades(
     config: ScalperConfig,
     *,
@@ -80,6 +127,9 @@ def analyze_trades(
     trades_path = resolve_trade_path(config.runtime_dir, input_path)
     records = load_trade_records(trades_path)
     shadow_records = load_shadow_records(resolve_shadow_trade_path(config.runtime_dir, input_path))
+    shadow_missing_records = load_shadow_missing_records(
+        resolve_shadow_missing_path(config.runtime_dir, input_path)
+    )
     report_key = build_report_key(config, date_key=date_key, days=days)
 
     if not records:
@@ -174,6 +224,14 @@ def analyze_trades(
         ticker_hour_stats=ticker_hour_stats,
         exit_reason_stats=exit_reason_stats,
     )
+    entry_forensics = build_entry_forensics_section(
+        config,
+        records=filtered,
+        top_n=top_n,
+    )
+    entry_forensics_focus = build_entry_forensics_focus(entry_forensics)
+    if entry_forensics_focus is not None:
+        focus.append(entry_forensics_focus)
 
     payload = {
         "status": "ok",
@@ -197,6 +255,7 @@ def analyze_trades(
         "by_hour": build_ranked_section(hour_stats, top_n=top_n),
         "by_ticker_hour": build_ranked_section(ticker_hour_stats, top_n=top_n),
         "by_exit_reason": build_ranked_section(exit_reason_stats, top_n=top_n),
+        "entry_forensics": entry_forensics,
         "largest_losses": [
             serialize_trade_record(record)
             for record in sorted(filtered, key=lambda item: item.net_pnl_rub)[:top_n]
@@ -208,13 +267,14 @@ def analyze_trades(
         "shadow_followup": build_shadow_followup_section(
             config,
             shadow_records=shadow_records,
+            shadow_missing_records=shadow_missing_records,
             start_date=start_date,
             end_date=resolved_end_date,
         ),
     }
     shadow_followup = payload["shadow_followup"] or {}
     shadow_summary = shadow_followup.get("summary") or {}
-    if int(shadow_summary.get("observation_count", 0) or 0) > 0:
+    if int(shadow_summary.get("observation_count", 0) or 0) >= SHADOW_MIN_OBSERVATIONS_FOR_FOCUS:
         focus.append(
             {
                 "type": "shadow_followup",
@@ -225,6 +285,19 @@ def analyze_trades(
                 ),
                 "improved_rate_pct": shadow_summary.get("improved_rate_pct"),
                 "delta_net_pnl_rub": shadow_summary.get("delta_net_pnl_rub"),
+            }
+        )
+    if int(shadow_summary.get("missing_followup_count", 0) or 0) > 0:
+        focus.append(
+            {
+                "type": "shadow_missing",
+                "message": (
+                    "Shadow follow-up sample is incomplete: "
+                    f"missing={shadow_summary.get('missing_followup_count', 0)}, "
+                    f"completion={shadow_summary.get('completion_rate_pct', 0)}%."
+                ),
+                "missing_followup_count": shadow_summary.get("missing_followup_count"),
+                "completion_rate_pct": shadow_summary.get("completion_rate_pct"),
             }
         )
     maybe_write_report(config.runtime_dir, payload, report_key=report_key, enabled=write_report)
@@ -248,6 +321,16 @@ def resolve_shadow_trade_path(runtime_dir: Path, input_path: str | None) -> Path
         if candidate.name == "paper_trades.jsonl":
             return candidate.with_name("shadow_trades.jsonl")
     return runtime_dir / "shadow_trades.jsonl"
+
+
+def resolve_shadow_missing_path(runtime_dir: Path, input_path: str | None) -> Path:
+    if input_path:
+        candidate = Path(input_path)
+        if candidate.is_dir():
+            return candidate / "shadow_missing.jsonl"
+        if candidate.name == "paper_trades.jsonl":
+            return candidate.with_name("shadow_missing.jsonl")
+    return runtime_dir / "shadow_missing.jsonl"
 
 
 def resolve_date_key(config: ScalperConfig, explicit: str | None) -> str:
@@ -328,6 +411,37 @@ def load_shadow_records(path: Path) -> list[ShadowTradeRecord]:
                         delta_net_pnl_rub=_decimal(item.get("delta_net_pnl_rub")),
                         real_exit_reason=str(item.get("real_exit_reason", "")),
                         shadow_result=str(item.get("shadow_result", "flat")),
+                    )
+                )
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError, ArithmeticError):
+                continue
+    return records
+
+
+def load_shadow_missing_records(path: Path) -> list[ShadowMissingRecord]:
+    if not path.exists():
+        return []
+    records: list[ShadowMissingRecord] = []
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            raw = line.strip()
+            if not raw:
+                continue
+            try:
+                item = json.loads(raw)
+                records.append(
+                    ShadowMissingRecord(
+                        instrument_id=str(item.get("instrument_id", "")),
+                        ticker=str(item.get("ticker", "")),
+                        side=str(item.get("side", "")),
+                        quantity_lots=int(item.get("quantity_lots", 0)),
+                        opened_at=datetime.fromisoformat(str(item["opened_at"])),
+                        real_closed_at=datetime.fromisoformat(str(item["real_closed_at"])),
+                        real_exit_reason=str(item.get("real_exit_reason", "")),
+                        missing_recorded_at=datetime.fromisoformat(
+                            str(item.get("missing_recorded_at") or item["issue_at"])
+                        ),
+                        missing_reason=str(item.get("missing_reason", "missing")),
                     )
                 )
             except (json.JSONDecodeError, KeyError, TypeError, ValueError, ArithmeticError):
@@ -434,6 +548,401 @@ def build_ranked_section(items: list[dict[str, Any]], *, top_n: int) -> dict[str
             reverse=True,
         )[:top_n],
         "count": len(items),
+    }
+
+
+def _decimal_or_none(value: Any) -> Decimal | None:
+    try:
+        if value in {None, ""}:
+            return None
+        decimal_value = Decimal(str(value))
+    except (ArithmeticError, TypeError, ValueError):
+        return None
+    if decimal_value.is_nan():
+        return None
+    return decimal_value
+
+
+def _average_decimal(values: list[Decimal | None]) -> str | None:
+    cleaned = [value for value in values if value is not None]
+    if not cleaned:
+        return None
+    return str(sum(cleaned, start=Decimal("0")) / Decimal(len(cleaned)))
+
+
+def parse_entry_reason_metrics(reason: str) -> dict[str, str]:
+    payload: dict[str, str] = {}
+    for key, value in ENTRY_REASON_PATTERN.findall(str(reason)):
+        payload[str(key)] = str(value)
+    return payload
+
+
+def build_entry_forensics_section(
+    config: ScalperConfig,
+    *,
+    records: list[TradeRecord],
+    top_n: int,
+) -> dict[str, Any]:
+    if not records:
+        return {
+            "status": "no_data",
+            "summary": {
+                "trade_count": 0,
+                "context_available_count": 0,
+                "context_coverage_pct": 0.0,
+                "tag_presence": {},
+                "worst_primary_tag": None,
+                "best_primary_tag": None,
+            },
+            "by_primary_tag": build_ranked_section([], top_n=top_n),
+            "by_entry_profile": build_ranked_section([], top_n=top_n),
+            "by_trend_label": build_ranked_section([], top_n=top_n),
+        }
+
+    context_map = build_indicator_context_map(config, records=records)
+    tag_presence: Counter[str] = Counter()
+    observations: list[EntryForensicsObservation] = []
+    context_available_count = 0
+
+    for record in records:
+        entry_metrics = parse_entry_reason_metrics(record.entry_reason)
+        indicator_state = resolve_indicator_context_for_trade(
+            record,
+            context_map=context_map,
+            timezone_info=config.timezone,
+        )
+        context_available = bool(indicator_state)
+        if context_available:
+            context_available_count += 1
+        tags = classify_entry_tags(
+            config,
+            record=record,
+            entry_metrics=entry_metrics,
+            indicator_state=indicator_state,
+        )
+        tag_presence.update(tags)
+        primary_tag = select_primary_entry_tag(tags)
+        observations.append(
+            EntryForensicsObservation(
+                trade=record,
+                entry_profile=str(entry_metrics.get("profile") or "unknown"),
+                primary_tag=primary_tag,
+                tags=tags,
+                context_available=context_available,
+                trend_label=str(indicator_state.get("trend_label") or "unknown"),
+                spread_bps=_decimal_or_none(entry_metrics.get("spread_bps")),
+                impulse_bps=_decimal_or_none(entry_metrics.get("impulse_bps")),
+                imbalance=_decimal_or_none(entry_metrics.get("imbalance")),
+                net_tp_bps=_decimal_or_none(entry_metrics.get("net_tp_bps")),
+                net_tp_after_costs_bps=_decimal_or_none(entry_metrics.get("net_tp_after_costs_bps")),
+                atr14_bps=_decimal_or_none(indicator_state.get("atr14_bps")),
+                session_twap_gap_bps=_decimal_or_none(indicator_state.get("session_twap_gap_bps")),
+            )
+        )
+
+    primary_tag_stats = build_entry_forensics_breakdown(
+        observations,
+        key_fn=lambda item: item.primary_tag,
+    )
+    entry_profile_stats = build_entry_forensics_breakdown(
+        observations,
+        key_fn=lambda item: item.entry_profile,
+    )
+    trend_label_stats = build_entry_forensics_breakdown(
+        observations,
+        key_fn=lambda item: item.trend_label,
+    )
+    worst_primary = next(
+        (
+            item
+            for item in sorted(primary_tag_stats, key=lambda row: Decimal(str(row["net_pnl_rub"])))
+            if _decimal(item["net_pnl_rub"]) < 0
+        ),
+        None,
+    )
+    best_primary = next(
+        (
+            item
+            for item in sorted(
+                primary_tag_stats,
+                key=lambda row: Decimal(str(row["net_pnl_rub"])),
+                reverse=True,
+            )
+            if _decimal(item["net_pnl_rub"]) > 0
+        ),
+        None,
+    )
+    trade_count = len(observations)
+    return {
+        "status": "ok" if context_available_count == trade_count else "partial_context",
+        "summary": {
+            "trade_count": trade_count,
+            "context_available_count": context_available_count,
+            "context_coverage_pct": round((context_available_count / trade_count) * 100, 2)
+            if trade_count
+            else 0.0,
+            "tag_presence": dict(tag_presence),
+            "worst_primary_tag": worst_primary["key"] if worst_primary is not None else None,
+            "best_primary_tag": best_primary["key"] if best_primary is not None else None,
+        },
+        "by_primary_tag": build_ranked_section(primary_tag_stats, top_n=top_n),
+        "by_entry_profile": build_ranked_section(entry_profile_stats, top_n=top_n),
+        "by_trend_label": build_ranked_section(trend_label_stats, top_n=top_n),
+        "largest_losses": [
+            serialize_entry_forensics_observation(item)
+            for item in sorted(observations, key=lambda row: row.trade.net_pnl_rub)[:top_n]
+        ],
+        "largest_wins": [
+            serialize_entry_forensics_observation(item)
+            for item in sorted(observations, key=lambda row: row.trade.net_pnl_rub, reverse=True)[:top_n]
+        ],
+    }
+
+
+def build_entry_forensics_breakdown(
+    observations: list[EntryForensicsObservation],
+    *,
+    key_fn: Callable[[EntryForensicsObservation], str],
+) -> list[dict[str, Any]]:
+    grouped: dict[str, list[EntryForensicsObservation]] = defaultdict(list)
+    for item in observations:
+        grouped[key_fn(item)].append(item)
+
+    breakdown: list[dict[str, Any]] = []
+    for key, items in grouped.items():
+        summary = summarize_records([item.trade for item in items])
+        summary["key"] = key
+        summary["context_coverage_pct"] = round(
+            (sum(1 for item in items if item.context_available) / len(items)) * 100,
+            2,
+        ) if items else 0.0
+        summary["avg_spread_bps"] = _average_decimal([item.spread_bps for item in items])
+        summary["avg_impulse_bps"] = _average_decimal([item.impulse_bps for item in items])
+        summary["avg_imbalance"] = _average_decimal([item.imbalance for item in items])
+        summary["avg_net_tp_bps"] = _average_decimal([item.net_tp_bps for item in items])
+        summary["avg_net_tp_after_costs_bps"] = _average_decimal(
+            [item.net_tp_after_costs_bps for item in items]
+        )
+        summary["avg_atr14_bps"] = _average_decimal([item.atr14_bps for item in items])
+        summary["avg_session_twap_gap_bps"] = _average_decimal(
+            [item.session_twap_gap_bps for item in items]
+        )
+        breakdown.append(summary)
+    return breakdown
+
+
+def build_indicator_context_map(
+    config: ScalperConfig,
+    *,
+    records: list[TradeRecord],
+) -> dict[str, dict[str, list[Any]]]:
+    date_keys = sorted(
+        {
+            record.opened_at.astimezone(config.timezone).date().isoformat()
+            for record in records
+        }
+    )
+    snapshots = load_snapshots_from_paths(
+        [snapshot_path_for_date(config.runtime_dir, date_key) for date_key in date_keys]
+    )
+    by_instrument: dict[str, list[Any]] = defaultdict(list)
+    for snapshot in snapshots:
+        by_instrument[snapshot.instrument.instrument_id].append(snapshot)
+
+    context_map: dict[str, dict[str, list[Any]]] = {}
+    for instrument_id, instrument_snapshots in by_instrument.items():
+        bars = build_completed_minute_bars(
+            instrument_snapshots,
+            timezone_info=config.timezone,
+        )
+        if not bars:
+            continue
+        times: list[datetime] = []
+        states: list[dict[str, Any]] = []
+        progressive: list[MinuteBar] = []
+        for bar in bars:
+            progressive.append(bar)
+            base_state = compute_indicator_state([item.close for item in progressive])
+            overlay_state = compute_overlay_indicator_state(progressive)
+            states.append({**base_state, **overlay_state})
+            times.append(bar.at)
+        context_map[instrument_id] = {"times": times, "states": states}
+    return context_map
+
+
+def build_completed_minute_bars(
+    snapshots: list[Any],
+    *,
+    timezone_info: Any,
+) -> list[MinuteBar]:
+    if not snapshots:
+        return []
+    ordered = sorted(snapshots, key=lambda item: item.at)
+    completed: list[MinuteBar] = []
+    current_minute = None
+    current_open = None
+    current_high = None
+    current_low = None
+    current_close = None
+
+    for snapshot in ordered:
+        local_minute = snapshot.at.astimezone(timezone_info).replace(second=0, microsecond=0)
+        mid_price = snapshot.mid_price
+        if current_minute is None:
+            current_minute = local_minute
+            current_open = mid_price
+            current_high = mid_price
+            current_low = mid_price
+            current_close = mid_price
+            continue
+        if local_minute == current_minute:
+            current_high = max(current_high or mid_price, mid_price)
+            current_low = min(current_low or mid_price, mid_price)
+            current_close = mid_price
+            continue
+        if None not in {current_open, current_high, current_low, current_close, current_minute}:
+            completed.append(
+                MinuteBar(
+                    at=current_minute,
+                    open=current_open,
+                    high=current_high,
+                    low=current_low,
+                    close=current_close,
+                )
+            )
+        current_minute = local_minute
+        current_open = mid_price
+        current_high = mid_price
+        current_low = mid_price
+        current_close = mid_price
+    return completed
+
+
+def resolve_indicator_context_for_trade(
+    record: TradeRecord,
+    *,
+    context_map: dict[str, dict[str, list[Any]]],
+    timezone_info: Any,
+) -> dict[str, Any]:
+    payload = context_map.get(record.instrument_id)
+    if not payload:
+        return {}
+    opened_minute = record.opened_at.astimezone(timezone_info).replace(second=0, microsecond=0)
+    times = payload.get("times") or []
+    states = payload.get("states") or []
+    if not times or not states:
+        return {}
+    idx = bisect_left(times, opened_minute) - 1
+    if idx < 0 or idx >= len(states):
+        return {}
+    return dict(states[idx])
+
+
+def classify_entry_tags(
+    config: ScalperConfig,
+    *,
+    record: TradeRecord,
+    entry_metrics: dict[str, str],
+    indicator_state: dict[str, Any],
+) -> tuple[str, ...]:
+    tags: list[str] = []
+    local_hour = record.opened_at.astimezone(config.timezone).hour
+    spread_bps = _decimal_or_none(entry_metrics.get("spread_bps"))
+    impulse_bps = _decimal_or_none(entry_metrics.get("impulse_bps"))
+    net_tp_bps = _decimal_or_none(entry_metrics.get("net_tp_bps"))
+    net_tp_after_costs_bps = _decimal_or_none(entry_metrics.get("net_tp_after_costs_bps"))
+    trend_label = str(indicator_state.get("trend_label") or "unknown")
+    atr14_bps = _decimal_or_none(indicator_state.get("atr14_bps"))
+    session_twap_gap_bps = _decimal_or_none(indicator_state.get("session_twap_gap_bps"))
+
+    if local_hour >= 17:
+        tags.append("late_session_fade")
+
+    effective_post_cost_edge = net_tp_after_costs_bps
+    if effective_post_cost_edge is None and net_tp_bps is not None and spread_bps is not None:
+        effective_post_cost_edge = net_tp_bps - spread_bps
+    if effective_post_cost_edge is not None and effective_post_cost_edge <= Decimal("2.5"):
+        tags.append("fee_churn")
+
+    low_atr_floor = None
+    if spread_bps is not None:
+        low_atr_floor = max(Decimal("7"), abs(spread_bps) * Decimal("3"))
+    low_volatility = atr14_bps is not None and low_atr_floor is not None and atr14_bps < low_atr_floor
+    weak_twap_displacement = (
+        session_twap_gap_bps is not None and abs(session_twap_gap_bps) < Decimal("1")
+    )
+    weak_impulse = impulse_bps is not None and abs(impulse_bps) <= Decimal("4")
+    if weak_impulse and (low_volatility or weak_twap_displacement or trend_label == "neutral"):
+        tags.append("micro_chop")
+
+    if record.side == "buy":
+        if trend_label == "bearish":
+            tags.append("counter_regime")
+        elif trend_label == "bullish" and (
+            session_twap_gap_bps is None or session_twap_gap_bps >= Decimal("0")
+        ):
+            tags.append("trend_follow")
+    else:
+        if trend_label == "bullish":
+            tags.append("counter_regime")
+        elif trend_label == "bearish" and (
+            session_twap_gap_bps is None or session_twap_gap_bps <= Decimal("0")
+        ):
+            tags.append("trend_follow")
+
+    if not tags:
+        tags.append("unclassified")
+    return tuple(dict.fromkeys(tags))
+
+
+def select_primary_entry_tag(tags: tuple[str, ...]) -> str:
+    for candidate in ENTRY_TAG_PRIORITY:
+        if candidate in tags:
+            return candidate
+    return tags[0] if tags else "unclassified"
+
+
+def build_entry_forensics_focus(section: dict[str, Any]) -> dict[str, Any] | None:
+    summary = section.get("summary") or {}
+    ranked = (section.get("by_primary_tag") or {}).get("worst") or []
+    worst = next(
+        (item for item in ranked if _decimal(item.get("net_pnl_rub")) < 0),
+        None,
+    )
+    if worst is None:
+        return None
+    return {
+        "type": "entry_forensics",
+        "message": (
+            "Главный разрушитель входов: "
+            f"{worst['key']} ({worst['trade_count']} trades, net {worst['net_pnl_rub']} RUB, "
+            f"context {summary.get('context_coverage_pct', 0)}%)."
+        ),
+        "key": worst["key"],
+        "net_pnl_rub": worst["net_pnl_rub"],
+        "trade_count": worst["trade_count"],
+    }
+
+
+def serialize_entry_forensics_observation(item: EntryForensicsObservation) -> dict[str, Any]:
+    return {
+        **serialize_trade_record(item.trade),
+        "entry_profile": item.entry_profile,
+        "primary_tag": item.primary_tag,
+        "tags": list(item.tags),
+        "context_available": item.context_available,
+        "trend_label": item.trend_label,
+        "spread_bps": str(item.spread_bps) if item.spread_bps is not None else None,
+        "impulse_bps": str(item.impulse_bps) if item.impulse_bps is not None else None,
+        "imbalance": str(item.imbalance) if item.imbalance is not None else None,
+        "net_tp_bps": str(item.net_tp_bps) if item.net_tp_bps is not None else None,
+        "net_tp_after_costs_bps": (
+            str(item.net_tp_after_costs_bps) if item.net_tp_after_costs_bps is not None else None
+        ),
+        "atr14_bps": str(item.atr14_bps) if item.atr14_bps is not None else None,
+        "session_twap_gap_bps": (
+            str(item.session_twap_gap_bps) if item.session_twap_gap_bps is not None else None
+        ),
     }
 
 
@@ -569,6 +1078,7 @@ def build_shadow_followup_section(
     config: ScalperConfig,
     *,
     shadow_records: list[ShadowTradeRecord],
+    shadow_missing_records: list[ShadowMissingRecord],
     start_date: date,
     end_date: date,
 ) -> dict[str, Any]:
@@ -577,7 +1087,12 @@ def build_shadow_followup_section(
         for record in shadow_records
         if start_date <= record.real_closed_at.astimezone(config.timezone).date() <= end_date
     ]
-    if not selected:
+    missing = [
+        record
+        for record in shadow_missing_records
+        if start_date <= record.real_closed_at.astimezone(config.timezone).date() <= end_date
+    ]
+    if not selected and not missing:
         return {
             "status": "no_data",
             "observation_count": 0,
@@ -591,6 +1106,8 @@ def build_shadow_followup_section(
                 "shadow_net_pnl_rub": "0",
                 "delta_net_pnl_rub": "0",
                 "average_delta_net_pnl_rub": "0",
+                "missing_followup_count": 0,
+                "completion_rate_pct": 0.0,
             },
         }
 
@@ -602,32 +1119,38 @@ def build_shadow_followup_section(
     delta_net = sum((item.delta_net_pnl_rub for item in selected), start=Decimal("0"))
     best_delta = max((item.delta_net_pnl_rub for item in selected), default=Decimal("0"))
     worst_delta = min((item.delta_net_pnl_rub for item in selected), default=Decimal("0"))
-    latest = max(selected, key=lambda item: item.shadow_closed_at)
+    latest = max(selected, key=lambda item: item.shadow_closed_at) if selected else None
     by_exit_reason = defaultdict(list)
     for item in selected:
         by_exit_reason[item.real_exit_reason].append(item)
+    missing_reasons = Counter(item.missing_reason for item in missing)
+    total_expected = len(selected) + len(missing)
 
     return {
-        "status": "ok",
+        "status": "ok" if not missing else "partial_missing_followups",
         "observation_count": len(selected),
         "summary": {
             "observation_count": len(selected),
             "improved_count": len(improved),
             "worsened_count": len(worsened),
             "flat_count": len(flat),
-            "improved_rate_pct": round((len(improved) / len(selected)) * 100, 2),
+            "improved_rate_pct": round((len(improved) / len(selected)) * 100, 2) if selected else 0.0,
             "real_net_pnl_rub": str(real_net),
             "shadow_net_pnl_rub": str(shadow_net),
             "delta_net_pnl_rub": str(delta_net),
-            "average_delta_net_pnl_rub": str(delta_net / Decimal(len(selected))),
+            "average_delta_net_pnl_rub": str(delta_net / Decimal(len(selected))) if selected else "0",
             "best_delta_net_pnl_rub": str(best_delta),
             "worst_delta_net_pnl_rub": str(worst_delta),
             "average_follow_seconds": round(
                 sum(item.shadow_follow_seconds for item in selected) / len(selected),
                 3,
-            ),
-            "last_trade_at": latest.shadow_closed_at.isoformat(),
-            "last_ticker": latest.ticker,
+            ) if selected else 0.0,
+            "last_trade_at": latest.shadow_closed_at.isoformat() if latest is not None else None,
+            "last_ticker": latest.ticker if latest is not None else None,
+            "missing_followup_count": len(missing),
+            "completion_rate_pct": round((len(selected) / total_expected) * 100, 2)
+            if total_expected
+            else 0.0,
         },
         "by_exit_reason": {
             reason: {
@@ -642,6 +1165,7 @@ def build_shadow_followup_section(
             }
             for reason, items in sorted(by_exit_reason.items())
         },
+        "missing_reasons": dict(missing_reasons),
         "largest_improvements": [
             serialize_shadow_record(item)
             for item in sorted(selected, key=lambda item: item.delta_net_pnl_rub, reverse=True)[:5]
@@ -649,6 +1173,10 @@ def build_shadow_followup_section(
         "largest_deteriorations": [
             serialize_shadow_record(item)
             for item in sorted(selected, key=lambda item: item.delta_net_pnl_rub)[:5]
+        ],
+        "recent_missing": [
+            serialize_shadow_missing_record(item)
+            for item in sorted(missing, key=lambda row: row.missing_recorded_at, reverse=True)[:5]
         ],
     }
 
@@ -683,6 +1211,18 @@ def serialize_shadow_record(record: ShadowTradeRecord) -> dict[str, Any]:
         "delta_net_pnl_rub": str(record.delta_net_pnl_rub),
         "shadow_result": record.shadow_result,
         "shadow_follow_seconds": round(record.shadow_follow_seconds, 3),
+    }
+
+
+def serialize_shadow_missing_record(record: ShadowMissingRecord) -> dict[str, Any]:
+    return {
+        "ticker": record.ticker,
+        "side": record.side,
+        "quantity_lots": record.quantity_lots,
+        "real_closed_at": record.real_closed_at.isoformat(),
+        "missing_recorded_at": record.missing_recorded_at.isoformat(),
+        "real_exit_reason": record.real_exit_reason,
+        "missing_reason": record.missing_reason,
     }
 
 

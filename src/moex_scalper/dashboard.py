@@ -679,6 +679,8 @@ HTML = """<!doctype html>
     const renderAnalysisSummary = (analysis) => {
       if (!analysis || !analysis.summary) return '<div class="empty">Пока нет analysis-report</div>';
       const summary = analysis.summary;
+      const entryForensics = analysis.entry_forensics || {};
+      const forensicsSummary = entryForensics.summary || {};
       return renderTable(
         ["Metric", "Value"],
         [
@@ -694,6 +696,9 @@ HTML = """<!doctype html>
           ["Median Trade", `<span class="${pnlClass(summary.median_trade_rub)}">${fmtRub(summary.median_trade_rub)}</span>`],
           ["Avg Hold", fmtNum(summary.average_hold_seconds, 2) + " s"],
           ["Assessment", analysis.assessment || "—"],
+          ["Entry Context", fmtNum(forensicsSummary.context_coverage_pct || 0, 2) + " %"],
+          ["Worst Entry Tag", forensicsSummary.worst_primary_tag || "—"],
+          ["Best Entry Tag", forensicsSummary.best_primary_tag || "—"],
         ],
       );
     };
@@ -735,6 +740,7 @@ HTML = """<!doctype html>
       const researchBest = summary.research?.best_strategy_lab_candidate || null;
       const researchRecommendation = summary.research?.strategy_lab_recommendation || null;
       const shadowToday = summary.shadow?.today || null;
+      const shadowIssuesToday = summary.shadow?.issues_today || null;
       return renderTable(
         ["Metric", "Value"],
         [
@@ -751,7 +757,10 @@ HTML = """<!doctype html>
           ["Overall Trades", fmtNum(summary.overall?.trade_count || 0, 0)],
           ["Overall Net PnL", `<span class="${pnlClass(summary.overall?.net_pnl_rub)}">${fmtRub(summary.overall?.net_pnl_rub)}</span>`],
           ["Shadow 2m Active", fmtNum(summary.shadow?.active_count || 0, 0)],
+          ["Shadow Overdue", fmtNum(summary.shadow?.overdue_count || 0, 0)],
           ["Shadow Obs", fmtNum(shadowToday?.observation_count || 0, 0)],
+          ["Shadow Expired", fmtNum(shadowIssuesToday?.issue_count || 0, 0)],
+          ["Shadow Coverage", fmtNum(summary.shadow?.coverage_rate_pct || 0, 2) + " %"],
           ["Shadow Improved", fmtNum(shadowToday?.improved_rate_pct || 0, 2) + " %"],
           ["Shadow Delta", `<span class="${pnlClass(shadowToday?.delta_net_pnl_rub)}">${fmtRub(shadowToday?.delta_net_pnl_rub)}</span>`],
           ["Analysis", summary.analysis?.assessment || summary.analysis?.status || "—"],

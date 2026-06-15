@@ -146,6 +146,17 @@ def _empty_shadow_summary(scope: str) -> dict[str, Any]:
     }
 
 
+def _empty_shadow_issue_summary(scope: str) -> dict[str, Any]:
+    return {
+        "scope": scope,
+        "issue_count": 0,
+        "reasons": {},
+        "last_issue_at": None,
+        "last_ticker": None,
+        "oldest_overdue_seconds": None,
+    }
+
+
 class PaperRuntimeStore:
     def __init__(self, runtime_dir: Path, timezone_info: object) -> None:
         self.runtime_dir = runtime_dir
@@ -154,12 +165,16 @@ class PaperRuntimeStore:
         self.session_path = self.runtime_dir / "paper_session.json"
         self.trades_path = self.runtime_dir / "paper_trades.jsonl"
         self.shadow_trades_path = self.runtime_dir / "shadow_trades.jsonl"
+        self.shadow_missing_path = self.runtime_dir / "shadow_missing.jsonl"
         self.stats_dir = self.runtime_dir / "stats"
         self.daily_dir = self.stats_dir / "daily"
         self.overview_path = self.stats_dir / "overview.json"
         self.shadow_stats_dir = self.stats_dir / "shadow"
         self.shadow_daily_dir = self.shadow_stats_dir / "daily"
         self.shadow_overview_path = self.shadow_stats_dir / "overview.json"
+        self.shadow_issue_stats_dir = self.stats_dir / "shadow_issues"
+        self.shadow_issue_daily_dir = self.shadow_issue_stats_dir / "daily"
+        self.shadow_issue_overview_path = self.shadow_issue_stats_dir / "overview.json"
 
     def load_session(self) -> dict[str, Any] | None:
         if not self.session_path.exists():
@@ -276,6 +291,36 @@ class PaperRuntimeStore:
             _atomic_write_json(daily_path, today)
         return {"overall": overview, "today": today}
 
+    def append_shadow_issue(self, payload: dict[str, Any]) -> None:
+        self.shadow_missing_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.shadow_missing_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        issue_at = datetime.fromisoformat(str(payload["issue_at"]))
+        day_key = trading_day_key(issue_at, self.timezone_info)
+        self._update_shadow_issue_summary(
+            self._shadow_issue_daily_summary_path(day_key),
+            payload,
+            scope=day_key,
+        )
+        self._update_shadow_issue_summary(
+            self.shadow_issue_overview_path,
+            payload,
+            scope="all_time",
+        )
+
+    def load_shadow_issue_stats(self, current_day: str) -> dict[str, dict[str, Any]]:
+        overview = self._read_shadow_issue_summary(self.shadow_issue_overview_path, scope="all_time")
+        today = self._read_shadow_issue_summary(
+            self._shadow_issue_daily_summary_path(current_day),
+            scope=current_day,
+        )
+        if not self.shadow_issue_overview_path.exists():
+            _atomic_write_json(self.shadow_issue_overview_path, overview)
+        daily_path = self._shadow_issue_daily_summary_path(current_day)
+        if not daily_path.exists():
+            _atomic_write_json(daily_path, today)
+        return {"overall": overview, "today": today}
+
     def seed_history_if_empty(self, trades: list[ClosedTrade]) -> bool:
         if not trades:
             return False
@@ -292,6 +337,9 @@ class PaperRuntimeStore:
 
     def _shadow_daily_summary_path(self, day_key: str) -> Path:
         return self.shadow_daily_dir / f"{day_key}.json"
+
+    def _shadow_issue_daily_summary_path(self, day_key: str) -> Path:
+        return self.shadow_issue_daily_dir / f"{day_key}.json"
 
     def _read_summary(self, path: Path, *, scope: str) -> dict[str, Any]:
         if not path.exists():
@@ -311,6 +359,21 @@ class PaperRuntimeStore:
         except json.JSONDecodeError:
             return _empty_shadow_summary(scope)
         payload.setdefault("scope", scope)
+        return payload
+
+    def _read_shadow_issue_summary(self, path: Path, *, scope: str) -> dict[str, Any]:
+        if not path.exists():
+            return _empty_shadow_issue_summary(scope)
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return _empty_shadow_issue_summary(scope)
+        payload.setdefault("scope", scope)
+        payload.setdefault("issue_count", 0)
+        payload.setdefault("reasons", {})
+        payload.setdefault("last_issue_at", None)
+        payload.setdefault("last_ticker", None)
+        payload.setdefault("oldest_overdue_seconds", None)
         return payload
 
     def _update_summary(self, path: Path, trade: ClosedTrade, *, scope: str) -> None:
@@ -395,6 +458,26 @@ class PaperRuntimeStore:
         summary["worst_delta_net_pnl_rub"] = str(worst_delta)
         summary["last_trade_at"] = str(payload.get("shadow_closed_at") or payload.get("real_closed_at") or "")
         summary["last_ticker"] = str(payload.get("ticker") or "")
+        _atomic_write_json(path, summary)
+
+    def _update_shadow_issue_summary(self, path: Path, payload: dict[str, Any], *, scope: str) -> None:
+        summary = self._read_shadow_issue_summary(path, scope=scope)
+        issue_count = int(summary.get("issue_count", 0)) + 1
+        reasons = Counter({str(key): int(value) for key, value in dict(summary.get("reasons", {})).items()})
+        reason = str(payload.get("missing_reason") or payload.get("reason") or "missing")
+        reasons[reason] += 1
+        overdue_seconds = float(payload.get("overdue_seconds", 0.0) or 0.0)
+        oldest_overdue = summary.get("oldest_overdue_seconds")
+        if oldest_overdue is None:
+            oldest_overdue_value = overdue_seconds
+        else:
+            oldest_overdue_value = max(float(oldest_overdue or 0.0), overdue_seconds)
+        summary["scope"] = scope
+        summary["issue_count"] = issue_count
+        summary["reasons"] = dict(reasons)
+        summary["last_issue_at"] = str(payload.get("issue_at") or payload.get("real_closed_at") or "")
+        summary["last_ticker"] = str(payload.get("ticker") or "")
+        summary["oldest_overdue_seconds"] = round(oldest_overdue_value, 3)
         _atomic_write_json(path, summary)
 
 

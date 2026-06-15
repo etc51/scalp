@@ -67,6 +67,7 @@ class BotState:
     last_market_data_at: datetime | None = None
     stats: dict[str, dict[str, object]] = field(default_factory=dict)
     shadow_stats: dict[str, dict[str, object]] = field(default_factory=dict)
+    shadow_issue_stats: dict[str, dict[str, object]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.trades_today is None:
@@ -472,6 +473,7 @@ class ScalperRuntime:
     def _write_runtime_state(self, now: datetime, executor: Any) -> None:
         latest_prices = self._latest_mark_prices()
         positions = list(self.state.positions.values())
+        shadow_overdue = self._shadow_overdue_metrics(now)
         portfolio: dict[str, object]
         if isinstance(executor, PaperExecutor):
             market_value_rub = executor.market_value_rub(positions, latest_prices)
@@ -595,10 +597,14 @@ class ScalperRuntime:
             "shadow": {
                 "followup_seconds": SHADOW_FOLLOWUP_SECONDS,
                 "active_count": len(self.state.active_shadow_trades),
+                "overdue_count": shadow_overdue["overdue_count"],
+                "oldest_overdue_seconds": shadow_overdue["oldest_overdue_seconds"],
                 "active": self.state.active_shadow_trades[-20:],
                 "recent_completed_today": self.state.shadow_recent_completed_today[-20:],
                 "today": (self.state.shadow_stats or {}).get("today"),
                 "overall": (self.state.shadow_stats or {}).get("overall"),
+                "issues_today": (self.state.shadow_issue_stats or {}).get("today"),
+                "issues_overall": (self.state.shadow_issue_stats or {}).get("overall"),
             },
             "portfolio": portfolio,
             "positions": [
@@ -741,6 +747,10 @@ class ScalperRuntime:
             for item in list(restored["shadow_recent_completed_today"])
             if str(item.get("shadow_closed_at", "")).startswith(current_day)
         ]
+        self._expire_shadow_trades(
+            as_of=now,
+            reason="expired_restore_roll",
+        )
         self._roll_market_history_day(datetime.now(timezone.utc))
         LOGGER.info(
             "Restored paper session cash=%s positions=%s trades_today=%s realized_today=%s guarded_tickers=%s",
@@ -793,6 +803,7 @@ class ScalperRuntime:
         try:
             self.state.stats = self.paper_store.load_stats(self.risk.current_day)
             self.state.shadow_stats = self.paper_store.load_shadow_stats(self.risk.current_day)
+            self.state.shadow_issue_stats = self.paper_store.load_shadow_issue_stats(self.risk.current_day)
         except Exception:  # noqa: BLE001
             LOGGER.exception("Failed to load paper stats")
 
@@ -814,6 +825,73 @@ class ScalperRuntime:
             "shadow_due_at": (trade.closed_at + timedelta(seconds=SHADOW_FOLLOWUP_SECONDS)).isoformat(),
         }
         self.state.active_shadow_trades.append(shadow_trade)
+
+    def _shadow_overdue_metrics(self, now: datetime) -> dict[str, float | int | None]:
+        overdue: list[float] = []
+        for payload in self.state.active_shadow_trades:
+            try:
+                due_at = datetime.fromisoformat(str(payload["shadow_due_at"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+            lag_seconds = (now - due_at).total_seconds()
+            if lag_seconds > 0:
+                overdue.append(lag_seconds)
+        return {
+            "overdue_count": len(overdue),
+            "oldest_overdue_seconds": round(max(overdue), 3) if overdue else None,
+        }
+
+    def _persist_shadow_issue(
+        self,
+        payload: dict[str, object],
+        *,
+        reason: str,
+        issue_at: datetime,
+    ) -> None:
+        try:
+            shadow_due_at = datetime.fromisoformat(str(payload["shadow_due_at"]))
+            overdue_seconds = max(0.0, (issue_at - shadow_due_at).total_seconds())
+            issue_payload = {
+                "instrument_id": str(payload.get("instrument_id") or ""),
+                "ticker": str(payload.get("ticker") or ""),
+                "side": str(payload.get("side") or ""),
+                "quantity_lots": int(payload.get("quantity_lots") or 0),
+                "opened_at": str(payload.get("opened_at") or ""),
+                "real_closed_at": str(payload.get("real_closed_at") or ""),
+                "real_exit_reason": str(payload.get("real_exit_reason") or ""),
+                "shadow_due_at": shadow_due_at.isoformat(),
+                "issue_at": issue_at.isoformat(),
+                "missing_recorded_at": issue_at.isoformat(),
+                "missing_reason": reason,
+                "overdue_seconds": round(overdue_seconds, 3),
+            }
+            self.paper_store.append_shadow_issue(issue_payload)
+            self._refresh_paper_stats()
+            LOGGER.warning(
+                "SHADOW_ISSUE %s side=%s reason=%s overdue=%ss",
+                issue_payload["ticker"],
+                issue_payload["side"],
+                reason,
+                issue_payload["overdue_seconds"],
+            )
+        except Exception:  # noqa: BLE001
+            LOGGER.exception("Failed to persist shadow issue payload=%s reason=%s", payload, reason)
+
+    def _expire_shadow_trades(self, *, as_of: datetime, reason: str) -> None:
+        if not self.state.active_shadow_trades:
+            return
+        remaining: list[dict[str, object]] = []
+        for payload in self.state.active_shadow_trades:
+            try:
+                due_at = datetime.fromisoformat(str(payload["shadow_due_at"]))
+            except (KeyError, TypeError, ValueError):
+                self._persist_shadow_issue(payload, reason="advance_error", issue_at=as_of)
+                continue
+            if as_of >= due_at:
+                self._persist_shadow_issue(payload, reason=reason, issue_at=as_of)
+                continue
+            remaining.append(payload)
+        self.state.active_shadow_trades = remaining
 
     def _advance_shadow_trades(self, snapshot: MarketSnapshot) -> None:
         if not self.state.active_shadow_trades:
@@ -880,6 +958,7 @@ class ScalperRuntime:
                 }
             except (ArithmeticError, KeyError, TypeError, ValueError):
                 LOGGER.exception("Failed to advance shadow trade payload=%s", payload)
+                self._persist_shadow_issue(payload, reason="advance_error", issue_at=snapshot.at)
                 continue
 
             self.paper_store.append_shadow_result(completed)
@@ -904,8 +983,8 @@ class ScalperRuntime:
         if self.state.recorded_market_snapshot_day == day_key:
             return
         if self.state.recorded_market_snapshot_day is not None:
+            self._expire_shadow_trades(as_of=moment, reason="expired_day_roll")
             self.state.shadow_recent_completed_today = []
-            self.state.active_shadow_trades = []
         self.state.recorded_market_snapshot_day = day_key
         self.state.recorded_market_snapshots_today = 0
 

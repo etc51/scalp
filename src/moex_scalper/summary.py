@@ -30,6 +30,12 @@ def build_daily_summary(
     today_stats = ((state or {}).get("stats") or {}).get("today") or {}
     overall_stats = ((state or {}).get("stats") or {}).get("overall") or {}
     shadow_state = (state or {}).get("shadow") or {}
+    shadow_today = shadow_state.get("today") or {}
+    shadow_issues_today = shadow_state.get("issues_today") or {}
+    shadow_observations = int(shadow_today.get("observation_count", 0) or 0)
+    shadow_issues = int(shadow_issues_today.get("issue_count", 0) or 0)
+    shadow_total = shadow_observations + shadow_issues
+    shadow_coverage_rate = round((shadow_observations / shadow_total) * 100, 2) if shadow_total else 0.0
     market_history = (state or {}).get("market_history") or {}
     blocked_reasons = dict((state or {}).get("blocked_reasons") or {})
     sorted_blocked = sorted(blocked_reasons.items(), key=lambda item: item[1], reverse=True)
@@ -64,8 +70,13 @@ def build_daily_summary(
         "shadow": {
             "followup_seconds": shadow_state.get("followup_seconds"),
             "active_count": int(shadow_state.get("active_count", 0) or 0),
-            "today": shadow_state.get("today"),
+            "overdue_count": int(shadow_state.get("overdue_count", 0) or 0),
+            "oldest_overdue_seconds": shadow_state.get("oldest_overdue_seconds"),
+            "coverage_rate_pct": shadow_coverage_rate,
+            "today": shadow_today,
             "overall": shadow_state.get("overall"),
+            "issues_today": shadow_issues_today,
+            "issues_overall": shadow_state.get("issues_overall"),
             "recent_completed_today": list(shadow_state.get("recent_completed_today") or []),
         },
         "market_history": {
@@ -162,6 +173,9 @@ def build_focus(payload: dict[str, Any]) -> list[str]:
     daily_loss_limit_enforced = bool(risk_controls.get("daily_loss_limit_enforced", True))
     shadow = payload.get("shadow") or {}
     shadow_today = shadow.get("today") or {}
+    shadow_issues_today = shadow.get("issues_today") or {}
+    shadow_issue_count = int(shadow_issues_today.get("issue_count", 0) or 0)
+    shadow_overdue_count = int(shadow.get("overdue_count", 0) or 0)
 
     if watchdog.get("status") not in {None, "healthy"}:
         focus.append(f"Watchdog status: {watchdog.get('status')}.")
@@ -213,6 +227,12 @@ def build_focus(payload: dict[str, Any]) -> list[str]:
             "Shadow 2m after close: "
             f"improved_rate={shadow_today.get('improved_rate_pct', 0)}%, "
             f"delta_net={shadow_today.get('delta_net_pnl_rub', '0')} RUB."
+        )
+    if shadow_issue_count > 0 or shadow_overdue_count > 0:
+        focus.append(
+            "Shadow follow-up coverage is incomplete: "
+            f"issues={shadow_issue_count}, overdue={shadow_overdue_count}, "
+            f"coverage={shadow.get('coverage_rate_pct', 0)}%."
         )
     if daily_loss_limit_hit and not daily_loss_limit_enforced:
         focus.append(
@@ -294,6 +314,7 @@ def build_headline(payload: dict[str, Any]) -> str:
     daily_loss_limit_enforced = bool(risk_controls.get("daily_loss_limit_enforced", True))
     shadow = payload.get("shadow") or {}
     shadow_today = shadow.get("today") or {}
+    shadow_issues_today = shadow.get("issues_today") or {}
 
     if watchdog.get("status") not in {None, "healthy"}:
         return f"Watchdog status {watchdog.get('status')}: контур требует внимания."
@@ -323,6 +344,12 @@ def build_headline(payload: dict[str, Any]) -> str:
         return "Paper-контур пробил дневной loss-limit, но продолжает торговлю для накопления статистики."
     if int(today.get("trade_count", 0) or 0) <= 0:
         return "Сегодня закрытых paper-сделок нет; продолжаем сбор сигнала и market-data."
+    if int(shadow_issues_today.get("issue_count", 0) or 0) > 0 or int(shadow.get("overdue_count", 0) or 0) > 0:
+        return (
+            "Shadow follow-up sample неполный: "
+            f"coverage {shadow.get('coverage_rate_pct', 0)}%, "
+            f"issues {shadow_issues_today.get('issue_count', 0)}, overdue {shadow.get('overdue_count', 0)}."
+        )
     if (
         int(shadow_today.get("observation_count", 0) or 0) >= SHADOW_MIN_OBSERVATIONS_FOR_SIGNAL
         and str(shadow_today.get("delta_net_pnl_rub", "0")) != "0"
@@ -361,6 +388,7 @@ def build_next_action(payload: dict[str, Any]) -> str:
     strategy_diagnostics = payload.get("strategy_diagnostics") or {}
     shadow = payload.get("shadow") or {}
     shadow_today = shadow.get("today") or {}
+    shadow_issues_today = shadow.get("issues_today") or {}
 
     if watchdog.get("restart_required"):
         return "inspect_watchdog_and_runtime"
@@ -380,6 +408,8 @@ def build_next_action(payload: dict[str, Any]) -> str:
         return str(watchdog.get("next_action"))
     if optimizer.get("status") == "no_entry_window_data" or research.get("status") == "no_entry_window_data":
         return "collect_in_window_market_data"
+    if int(shadow_issues_today.get("issue_count", 0) or 0) > 0 or int(shadow.get("overdue_count", 0) or 0) > 0:
+        return "inspect_shadow_followup_integrity"
     if int(shadow_today.get("observation_count", 0) or 0) >= SHADOW_MIN_OBSERVATIONS_FOR_SIGNAL:
         delta = str(shadow_today.get("delta_net_pnl_rub", "0"))
         if delta.startswith("-"):
