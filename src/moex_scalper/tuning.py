@@ -722,7 +722,10 @@ def write_tuning_report(runtime_dir: Path, payload: dict[str, Any]) -> None:
 def _load_json(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
-    return json.loads(path.read_text(encoding="utf-8"))
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
 
 
 def _env_value(key: str, default: str | None = None) -> str | None:

@@ -666,7 +666,10 @@ def build_next_action(*, apply: bool, applied: bool, reasons: list[str]) -> str:
 def _load_json(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
-    return json.loads(path.read_text(encoding="utf-8"))
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
 
 
 def _env_value(key: str, default: str | None = None) -> str | None:

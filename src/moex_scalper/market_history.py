@@ -54,27 +54,30 @@ def load_snapshots(path: Path) -> list[MarketSnapshot]:
             raw = line.strip()
             if not raw:
                 continue
-            item = json.loads(raw)
-            instrument = InstrumentSpec(
-                instrument_id=str(item["instrument_id"]),
-                ticker=str(item["ticker"]),
-                class_code=str(item["class_code"]),
-                figi=str(item["figi"]),
-                lot_size=int(item["lot_size"]),
-                min_price_increment=Decimal(str(item["min_price_increment"])),
-                currency=str(item["currency"]),
-                name=str(item["name"]),
-            )
-            snapshots.append(
-                MarketSnapshot(
-                    instrument=instrument,
-                    bid_price=Decimal(str(item["bid_price"])),
-                    ask_price=Decimal(str(item["ask_price"])),
-                    bid_quantity=int(item["bid_quantity"]),
-                    ask_quantity=int(item["ask_quantity"]),
-                    at=datetime.fromisoformat(str(item["at"])),
+            try:
+                item = json.loads(raw)
+                instrument = InstrumentSpec(
+                    instrument_id=str(item["instrument_id"]),
+                    ticker=str(item["ticker"]),
+                    class_code=str(item["class_code"]),
+                    figi=str(item["figi"]),
+                    lot_size=int(item["lot_size"]),
+                    min_price_increment=Decimal(str(item["min_price_increment"])),
+                    currency=str(item["currency"]),
+                    name=str(item["name"]),
                 )
-            )
+                snapshots.append(
+                    MarketSnapshot(
+                        instrument=instrument,
+                        bid_price=Decimal(str(item["bid_price"])),
+                        ask_price=Decimal(str(item["ask_price"])),
+                        bid_quantity=int(item["bid_quantity"]),
+                        ask_quantity=int(item["ask_quantity"]),
+                        at=datetime.fromisoformat(str(item["at"])),
+                    )
+                )
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError, ArithmeticError):
+                continue
     return snapshots
 
 

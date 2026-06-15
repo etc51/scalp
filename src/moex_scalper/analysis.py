@@ -215,28 +215,31 @@ def load_trade_records(path: Path) -> list[TradeRecord]:
             raw = line.strip()
             if not raw:
                 continue
-            item = json.loads(raw)
-            opened_at = datetime.fromisoformat(str(item["opened_at"]))
-            closed_at = datetime.fromisoformat(str(item["closed_at"]))
-            hold_seconds = float(item.get("hold_seconds", (closed_at - opened_at).total_seconds()))
-            records.append(
-                TradeRecord(
-                    instrument_id=str(item.get("instrument_id", "")),
-                    ticker=str(item.get("ticker", "")),
-                    side=str(item.get("side", "")),
-                    quantity_lots=int(item.get("quantity_lots", 0)),
-                    entry_price=_decimal(item.get("entry_price")),
-                    exit_price=_decimal(item.get("exit_price")),
-                    opened_at=opened_at,
-                    closed_at=closed_at,
-                    gross_pnl_rub=_decimal(item.get("gross_pnl_rub")),
-                    fees_rub=_decimal(item.get("fees_rub")),
-                    net_pnl_rub=_decimal(item.get("net_pnl_rub")),
-                    entry_reason=str(item.get("entry_reason", "")),
-                    exit_reason=str(item.get("exit_reason", "")),
-                    hold_seconds=hold_seconds,
+            try:
+                item = json.loads(raw)
+                opened_at = datetime.fromisoformat(str(item["opened_at"]))
+                closed_at = datetime.fromisoformat(str(item["closed_at"]))
+                hold_seconds = float(item.get("hold_seconds", (closed_at - opened_at).total_seconds()))
+                records.append(
+                    TradeRecord(
+                        instrument_id=str(item.get("instrument_id", "")),
+                        ticker=str(item.get("ticker", "")),
+                        side=str(item.get("side", "")),
+                        quantity_lots=int(item.get("quantity_lots", 0)),
+                        entry_price=_decimal(item.get("entry_price")),
+                        exit_price=_decimal(item.get("exit_price")),
+                        opened_at=opened_at,
+                        closed_at=closed_at,
+                        gross_pnl_rub=_decimal(item.get("gross_pnl_rub")),
+                        fees_rub=_decimal(item.get("fees_rub")),
+                        net_pnl_rub=_decimal(item.get("net_pnl_rub")),
+                        entry_reason=str(item.get("entry_reason", "")),
+                        exit_reason=str(item.get("exit_reason", "")),
+                        hold_seconds=hold_seconds,
+                    )
                 )
-            )
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError, ArithmeticError):
+                continue
     return records
 
 

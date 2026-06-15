@@ -141,7 +141,10 @@ class PaperRuntimeStore:
     def load_session(self) -> dict[str, Any] | None:
         if not self.session_path.exists():
             return None
-        return json.loads(self.session_path.read_text(encoding="utf-8"))
+        try:
+            return json.loads(self.session_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return None
 
     def save_session(
         self,
@@ -236,7 +239,10 @@ class PaperRuntimeStore:
     def _read_summary(self, path: Path, *, scope: str) -> dict[str, Any]:
         if not path.exists():
             return _empty_summary(scope)
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return _empty_summary(scope)
         payload.setdefault("scope", scope)
         return payload
 
