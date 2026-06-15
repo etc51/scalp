@@ -108,6 +108,7 @@ def build_daily_summary(
             "ready_actions": list((governance or {}).get("ready_actions") or []),
             "blocked_ready_actions": list((governance or {}).get("blocked_ready_actions") or []),
             "post_change_guard": (governance or {}).get("post_change_guard"),
+            "active_experiment": (governance or {}).get("active_experiment"),
             "service_restart_required": (governance or {}).get("service_restart_required"),
         },
         "watchdog": {
@@ -134,6 +135,7 @@ def build_focus(payload: dict[str, Any]) -> list[str]:
     research = payload.get("research") or {}
     doctor = payload.get("doctor") or {}
     governance = payload.get("governance") or {}
+    active_experiment = governance.get("active_experiment") or {}
     watchdog = payload.get("watchdog") or {}
     strategy_diagnostics = payload.get("strategy_diagnostics") or {}
 
@@ -150,6 +152,18 @@ def build_focus(payload: dict[str, Any]) -> list[str]:
     elif (governance.get("post_change_guard") or {}).get("active"):
         focus.append(
             "Nightly governor ждет новый sample после последнего apply и пока не наслаивает следующую автоправку."
+        )
+    if active_experiment.get("status") == "negative_expectancy_so_far":
+        focus.append(
+            "Последний auto-change пока выглядит отрицательно по expectancy на новом sample."
+        )
+    elif active_experiment.get("status") == "positive_expectancy_so_far":
+        focus.append(
+            "Последний auto-change пока выглядит полезным: post-change sample держится в плюсе."
+        )
+    elif active_experiment.get("status") == "collecting_sample":
+        focus.append(
+            f"После последнего auto-change пока только {active_experiment.get('trade_count', 0)} сделок: рано судить."
         )
     if not strategy_diagnostics.get("viable_for_entry", True):
         warnings = set(str(item) for item in strategy_diagnostics.get("warnings") or [])
@@ -203,6 +217,7 @@ def build_headline(payload: dict[str, Any]) -> str:
     research = payload.get("research") or {}
     doctor = payload.get("doctor") or {}
     governance = payload.get("governance") or {}
+    active_experiment = governance.get("active_experiment") or {}
     watchdog = payload.get("watchdog") or {}
     strategy_diagnostics = payload.get("strategy_diagnostics") or {}
 
@@ -214,6 +229,10 @@ def build_headline(payload: dict[str, Any]) -> str:
         return "Nightly governor применил изменения и ожидает один рестарт paper-сервиса."
     if (governance.get("post_change_guard") or {}).get("active"):
         return "Nightly governor ждет новый post-change sample перед следующей авто-правкой."
+    if active_experiment.get("status") == "negative_expectancy_so_far":
+        return "Последний auto-change пока не подтверждает улучшение: post-change sample остается отрицательным."
+    if active_experiment.get("status") == "positive_expectancy_so_far":
+        return "Последний auto-change пока выглядит полезным: post-change sample положительный."
     if not strategy_diagnostics.get("viable_for_entry", True):
         warnings = set(str(item) for item in strategy_diagnostics.get("warnings") or [])
         if "min_expected_edge_above_take_profit" in warnings:
@@ -243,6 +262,7 @@ def build_next_action(payload: dict[str, Any]) -> str:
     tuning = payload.get("tuning") or {}
     restrictions = payload.get("restrictions") or {}
     governance = payload.get("governance") or {}
+    active_experiment = governance.get("active_experiment") or {}
     watchdog = payload.get("watchdog") or {}
     strategy_diagnostics = payload.get("strategy_diagnostics") or {}
 
@@ -252,6 +272,8 @@ def build_next_action(payload: dict[str, Any]) -> str:
         return "inspect_api_access"
     if governance.get("next_action") not in {None, "no_change"}:
         return str(governance.get("next_action"))
+    if active_experiment.get("next_action") not in {None, "wait_for_next_apply", "collect_post_change_sample"}:
+        return str(active_experiment.get("next_action"))
     if not strategy_diagnostics.get("viable_for_entry", True):
         return resolve_strategy_config_next_action(strategy_diagnostics)
     if not strategy_diagnostics.get("target_headroom_met", True):

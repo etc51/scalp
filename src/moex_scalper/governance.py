@@ -6,7 +6,17 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from .analysis import analyze_trades
+from .analysis import (
+    analyze_trades,
+    build_breakdown,
+    build_focus as build_analysis_focus,
+    build_ranked_section,
+    classify_assessment,
+    filter_trade_records_for_entry_window,
+    load_trade_records,
+    resolve_trade_path,
+    summarize_records,
+)
 from .config import ScalperConfig
 from .optimizer import optimize_parameters
 from .research import build_indicator_research
@@ -21,6 +31,7 @@ def run_governor(
     write_report: bool,
     env_path: str = ".env",
 ) -> dict[str, Any]:
+    generated_at = datetime.utcnow().isoformat() + "Z"
     analysis_days = int(_env_value("SCALPER_ANALYSIS_DAYS", "5"))
     analysis_top = int(_env_value("SCALPER_ANALYSIS_TOP", "5"))
     optimizer_days = int(_env_value("SCALPER_OPTIMIZER_DAYS", "5"))
@@ -111,6 +122,14 @@ def run_governor(
         restrictions_applied = bool(restrictions_result.get("applied"))
 
     applied_any = tuning_applied or restrictions_applied
+    applied_actions = [
+        action
+        for action, applied_flag in (
+            ("tuning", tuning_applied),
+            ("restrictions", restrictions_applied),
+        )
+        if applied_flag
+    ]
     candidate_actions = []
     if tuning_ready:
         candidate_actions.append("tuning")
@@ -131,15 +150,30 @@ def run_governor(
         for action in ready_actions
         if action != selected_action
     ]
+    experiment_anchor = (
+        {
+            "generated_at": generated_at,
+            "applied": True,
+            "applied_actions": applied_actions,
+            "evidence": evidence,
+        }
+        if applied_any
+        else last_applied_change
+    )
+    active_experiment = build_post_change_experiment(
+        config,
+        anchor_payload=experiment_anchor,
+    )
 
     payload = {
         "status": "ok",
-        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "generated_at": generated_at,
         "mode": config.mode,
         "apply_requested": apply,
         "applied": applied_any,
         "evidence": evidence,
         "post_change_guard": post_change_guard,
+        "active_experiment": active_experiment,
         "action_scores": action_scores,
         "selected_action": selected_action,
         "selection_reason": selection_reason,
@@ -153,14 +187,7 @@ def run_governor(
         "ready_actions": ready_actions,
         "blocked_ready_actions": blocked_ready_actions,
         "deferred_actions": deferred_actions,
-        "applied_actions": [
-            action
-            for action, applied_flag in (
-                ("tuning", tuning_applied),
-                ("restrictions", restrictions_applied),
-            )
-            if applied_flag
-        ],
+        "applied_actions": applied_actions,
         "service_restart_required": applied_any,
         "pipeline": {
             "analysis_status": analysis_payload.get("status"),
@@ -639,6 +666,104 @@ def extract_evidence_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def build_post_change_experiment(
+    config: ScalperConfig,
+    *,
+    anchor_payload: dict[str, Any] | None,
+) -> dict[str, Any]:
+    min_eval_trades = int(_env_value("SCALPER_GOVERNOR_POST_CHANGE_MIN_EVAL_TRADES", "5") or 5)
+    payload: dict[str, Any] = {
+        "status": "no_prior_applied_change",
+        "applied_at": None,
+        "applied_actions": [],
+        "age_hours": None,
+        "min_eval_trades": min_eval_trades,
+        "ready_for_evaluation": False,
+        "raw_trade_count": 0,
+        "trade_count": 0,
+        "summary": None,
+        "assessment": None,
+        "focus": [],
+        "by_ticker": None,
+        "by_hour": None,
+        "entry_window_summary": None,
+        "next_action": "wait_for_next_apply",
+    }
+    if anchor_payload is None:
+        return payload
+
+    applied_at = anchor_payload.get("generated_at")
+    applied_actions = list(anchor_payload.get("applied_actions") or [])
+    payload["applied_at"] = applied_at
+    payload["applied_actions"] = applied_actions
+    payload["age_hours"] = _age_hours(applied_at)
+
+    anchor_moment = _parse_datetime(applied_at)
+    if anchor_moment is None:
+        payload["status"] = "invalid_anchor_time"
+        payload["next_action"] = "inspect_governance_history"
+        return payload
+
+    trades_path = resolve_trade_path(config.runtime_dir, input_path=None)
+    records = load_trade_records(trades_path)
+    if not records:
+        payload["status"] = "no_trade_log"
+        payload["next_action"] = "collect_more_paper_trades"
+        return payload
+
+    selected = [record for record in records if record.closed_at > anchor_moment]
+    payload["raw_trade_count"] = len(selected)
+    if not selected:
+        payload["status"] = "no_trades_since_change"
+        payload["next_action"] = "collect_post_change_sample"
+        return payload
+
+    filtered, entry_window_summary = filter_trade_records_for_entry_window(config, selected)
+    payload["entry_window_summary"] = entry_window_summary
+    if not filtered:
+        payload["status"] = "no_entry_window_trades_since_change"
+        payload["next_action"] = "collect_post_change_sample"
+        return payload
+
+    ticker_stats = build_breakdown(filtered, key_fn=lambda item: item.ticker)
+    hour_stats = build_breakdown(
+        filtered,
+        key_fn=lambda item: item.closed_at.astimezone(config.timezone).strftime("%H:00"),
+    )
+    exit_reason_stats = build_breakdown(filtered, key_fn=lambda item: item.exit_reason)
+    summary = summarize_records(filtered)
+    assessment = classify_assessment(summary)
+    focus = build_analysis_focus(
+        summary,
+        ticker_stats=ticker_stats,
+        hour_stats=hour_stats,
+        exit_reason_stats=exit_reason_stats,
+    )
+    trade_count = int(summary.get("trade_count", 0) or 0)
+
+    payload["trade_count"] = trade_count
+    payload["summary"] = summary
+    payload["assessment"] = assessment
+    payload["focus"] = focus
+    payload["by_ticker"] = build_ranked_section(ticker_stats, top_n=3)
+    payload["by_hour"] = build_ranked_section(hour_stats, top_n=3)
+    payload["ready_for_evaluation"] = trade_count >= min_eval_trades
+
+    if trade_count < min_eval_trades:
+        payload["status"] = "collecting_sample"
+        payload["next_action"] = "collect_post_change_sample"
+        return payload
+
+    payload["status"] = assessment
+    if assessment == "negative_expectancy_so_far":
+        payload["next_action"] = "review_last_governor_change_effect"
+    elif assessment in {"positive_expectancy_so_far", "positive_pnl_but_fragile"}:
+        payload["next_action"] = "continue_collecting_and_compare"
+    else:
+        payload["next_action"] = "collect_post_change_sample"
+    return payload
+
+
 def write_governance_report(runtime_dir: Path, payload: dict[str, Any]) -> None:
     governance_dir = runtime_dir / "governance"
     governance_dir.mkdir(parents=True, exist_ok=True)
@@ -701,3 +826,18 @@ def _age_hours(value: Any) -> float | None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     delta = datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)
     return round(delta.total_seconds() / 3600, 3)
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    timestamp = str(value).strip()
+    if not timestamp:
+        return None
+    try:
+        parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
