@@ -17,6 +17,7 @@ from .commission import CommissionModel
 from .config import ScalperConfig
 from .diagnostics import build_strategy_diagnostics
 from .domain import ClosedTrade, MarketSnapshot, Position, Side
+from .entry_window import moment_in_entry_window
 from .execution import LiveExecutor, PaperExecutor
 from .market_history import MarketSnapshotRecorder
 from .persistence import PaperRuntimeStore, restore_runtime_entities
@@ -49,6 +50,11 @@ class BotState:
     trades_today: list[ClosedTrade] = None
     snapshots_processed: int = 0
     signals_detected: int = 0
+    recorded_market_snapshots_total: int = 0
+    recorded_market_snapshots_today: int = 0
+    skipped_market_snapshots_total: int = 0
+    recorded_market_snapshot_day: str | None = None
+    last_recorded_market_snapshot_at: datetime | None = None
     blocked_reasons: Counter[str] = field(default_factory=Counter)
     last_snapshot_summary: dict[str, str] = field(default_factory=dict)
     last_snapshots: dict[str, MarketSnapshot] = field(default_factory=dict)
@@ -182,10 +188,19 @@ class ScalperRuntime:
     async def _handle_snapshot(self, snapshot: MarketSnapshot, executor: Any) -> None:
         self.state.snapshots_processed += 1
         self.state.last_market_data_at = datetime.now(timezone.utc)
-        try:
-            self.snapshot_recorder.append(snapshot)
-        except Exception:  # noqa: BLE001
-            LOGGER.exception("Failed to persist market snapshot")
+        self._roll_market_history_day(snapshot.at)
+        in_window, _ = moment_in_entry_window(self.config, snapshot.at)
+        if in_window:
+            try:
+                self.snapshot_recorder.append(snapshot)
+            except Exception:  # noqa: BLE001
+                LOGGER.exception("Failed to persist market snapshot")
+            else:
+                self.state.recorded_market_snapshots_total += 1
+                self.state.recorded_market_snapshots_today += 1
+                self.state.last_recorded_market_snapshot_at = snapshot.at
+        else:
+            self.state.skipped_market_snapshots_total += 1
         self.state.last_snapshots[snapshot.instrument.instrument_id] = snapshot
         self.state.last_snapshot_summary[snapshot.instrument.ticker] = (
             f"bid={snapshot.bid_price} ask={snapshot.ask_price} "
@@ -445,6 +460,19 @@ class ScalperRuntime:
             },
             "snapshots_processed": self.state.snapshots_processed,
             "signals_detected": self.state.signals_detected,
+            "market_history": {
+                "recording_mode": "entry_window_only",
+                "entry_window_only": True,
+                "recorded_snapshots_total": self.state.recorded_market_snapshots_total,
+                "recorded_snapshots_today": self.state.recorded_market_snapshots_today,
+                "skipped_snapshots_total": self.state.skipped_market_snapshots_total,
+                "current_day": self.state.recorded_market_snapshot_day,
+                "last_recorded_at": (
+                    self.state.last_recorded_market_snapshot_at.isoformat()
+                    if self.state.last_recorded_market_snapshot_at is not None
+                    else None
+                ),
+            },
             "realized_pnl_rub": str(self.risk.realized_pnl_rub),
             "market_data": {
                 "last_received_at": self.state.last_market_data_at.isoformat() if self.state.last_market_data_at else None,
@@ -553,6 +581,12 @@ class ScalperRuntime:
         self.state.blocked_reasons = restored["blocked_reasons"]
         self.state.snapshots_processed = restored["snapshots_processed"]
         self.state.signals_detected = restored["signals_detected"]
+        self.state.recorded_market_snapshots_total = restored["recorded_market_snapshots_total"]
+        self.state.recorded_market_snapshots_today = restored["recorded_market_snapshots_today"]
+        self.state.skipped_market_snapshots_total = restored["skipped_market_snapshots_total"]
+        self.state.recorded_market_snapshot_day = restored["recorded_market_snapshot_day"]
+        self.state.last_recorded_market_snapshot_at = restored["last_recorded_market_snapshot_at"]
+        self._roll_market_history_day(datetime.now(timezone.utc))
         LOGGER.info(
             "Restored paper session cash=%s positions=%s trades_today=%s realized_today=%s",
             executor.cash_rub,
@@ -573,6 +607,11 @@ class ScalperRuntime:
                 blocked_reasons=self.state.blocked_reasons,
                 snapshots_processed=self.state.snapshots_processed,
                 signals_detected=self.state.signals_detected,
+                recorded_market_snapshots_total=self.state.recorded_market_snapshots_total,
+                recorded_market_snapshots_today=self.state.recorded_market_snapshots_today,
+                skipped_market_snapshots_total=self.state.skipped_market_snapshots_total,
+                recorded_market_snapshot_day=self.state.recorded_market_snapshot_day,
+                last_recorded_market_snapshot_at=self.state.last_recorded_market_snapshot_at,
             )
         except Exception:  # noqa: BLE001
             LOGGER.exception("Failed to save paper session state")
@@ -589,3 +628,10 @@ class ScalperRuntime:
             self.state.stats = self.paper_store.load_stats(self.risk.current_day)
         except Exception:  # noqa: BLE001
             LOGGER.exception("Failed to load paper stats")
+
+    def _roll_market_history_day(self, moment: datetime) -> None:
+        day_key = moment.astimezone(self.config.timezone).date().isoformat()
+        if self.state.recorded_market_snapshot_day == day_key:
+            return
+        self.state.recorded_market_snapshot_day = day_key
+        self.state.recorded_market_snapshots_today = 0

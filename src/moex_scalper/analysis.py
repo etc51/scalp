@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .config import ScalperConfig
-from .optimizer import snapshot_in_entry_window
+from .entry_window import moment_in_entry_window
 
 
 def _decimal(value: str | int | float | Decimal | None, default: str = "0") -> Decimal:
@@ -242,7 +242,7 @@ def filter_trade_records_for_entry_window(
     excluded_dates: set[str] = set()
 
     for record in records:
-        allowed, reason = snapshot_in_entry_window(config, record.opened_at)
+        allowed, reason = moment_in_entry_window(config, record.opened_at)
         local_date = record.opened_at.astimezone(config.timezone).date().isoformat()
         if allowed:
             included.append(record)

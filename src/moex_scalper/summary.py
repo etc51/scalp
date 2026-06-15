@@ -25,6 +25,7 @@ def build_daily_summary(
 
     today_stats = ((state or {}).get("stats") or {}).get("today") or {}
     overall_stats = ((state or {}).get("stats") or {}).get("overall") or {}
+    market_history = (state or {}).get("market_history") or {}
     blocked_reasons = dict((state or {}).get("blocked_reasons") or {})
     sorted_blocked = sorted(blocked_reasons.items(), key=lambda item: item[1], reverse=True)
     top_blocked = [{"reason": reason, "count": count} for reason, count in sorted_blocked[:5]]
@@ -42,6 +43,7 @@ def build_daily_summary(
             "win_rate_pct": today_stats.get("win_rate_pct"),
             "signals_detected": int((state or {}).get("signals_detected", 0) or 0),
             "snapshots_processed": int((state or {}).get("snapshots_processed", 0) or 0),
+            "recorded_snapshots": int(market_history.get("recorded_snapshots_today", 0) or 0),
             "open_positions": len(list((state or {}).get("positions") or [])),
             "top_blocked_reasons": top_blocked,
         },
@@ -49,6 +51,14 @@ def build_daily_summary(
             "trade_count": int(overall_stats.get("trade_count", 0) or 0),
             "net_pnl_rub": overall_stats.get("net_pnl_rub"),
             "win_rate_pct": overall_stats.get("win_rate_pct"),
+        },
+        "market_history": {
+            "recording_mode": market_history.get("recording_mode"),
+            "recorded_snapshots_total": int(market_history.get("recorded_snapshots_total", 0) or 0),
+            "recorded_snapshots_today": int(market_history.get("recorded_snapshots_today", 0) or 0),
+            "skipped_snapshots_total": int(market_history.get("skipped_snapshots_total", 0) or 0),
+            "current_day": market_history.get("current_day"),
+            "last_recorded_at": market_history.get("last_recorded_at"),
         },
         "analysis": {
             "status": (analysis or {}).get("status"),

@@ -155,6 +155,11 @@ class PaperRuntimeStore:
         blocked_reasons: Counter[str],
         snapshots_processed: int,
         signals_detected: int,
+        recorded_market_snapshots_total: int,
+        recorded_market_snapshots_today: int,
+        skipped_market_snapshots_total: int,
+        recorded_market_snapshot_day: str | None,
+        last_recorded_market_snapshot_at: datetime | None,
     ) -> None:
         payload = {
             "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -172,6 +177,17 @@ class PaperRuntimeStore:
             "blocked_reasons": dict(blocked_reasons),
             "snapshots_processed": snapshots_processed,
             "signals_detected": signals_detected,
+            "market_history": {
+                "recorded_snapshots_total": recorded_market_snapshots_total,
+                "recorded_snapshots_today": recorded_market_snapshots_today,
+                "skipped_snapshots_total": skipped_market_snapshots_total,
+                "current_day": recorded_market_snapshot_day,
+                "last_recorded_at": (
+                    last_recorded_market_snapshot_at.isoformat()
+                    if last_recorded_market_snapshot_at is not None
+                    else None
+                ),
+            },
         }
         _atomic_write_json(self.session_path, payload)
 
@@ -284,6 +300,7 @@ def restore_runtime_entities(
         if trade is not None
     ]
     risk_payload = dict(payload.get("risk", {}))
+    market_history_payload = dict(payload.get("market_history", {}))
     cooldown_until = {
         instrument_id: restored
         for instrument_id, restored in (
@@ -307,4 +324,15 @@ def restore_runtime_entities(
         "blocked_reasons": Counter(dict(payload.get("blocked_reasons", {}))),
         "snapshots_processed": int(payload.get("snapshots_processed", 0)),
         "signals_detected": int(payload.get("signals_detected", 0)),
+        "recorded_market_snapshots_total": int(market_history_payload.get("recorded_snapshots_total", 0)),
+        "recorded_market_snapshots_today": int(market_history_payload.get("recorded_snapshots_today", 0)),
+        "skipped_market_snapshots_total": int(market_history_payload.get("skipped_snapshots_total", 0)),
+        "recorded_market_snapshot_day": (
+            str(market_history_payload.get("current_day"))
+            if market_history_payload.get("current_day") is not None
+            else None
+        ),
+        "last_recorded_market_snapshot_at": _utc_iso_to_datetime(
+            market_history_payload.get("last_recorded_at")
+        ),
     }

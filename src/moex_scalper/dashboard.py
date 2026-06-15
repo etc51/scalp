@@ -628,6 +628,7 @@ HTML = """<!doctype html>
           ["Today Net PnL", `<span class="${pnlClass(summary.today?.net_pnl_rub)}">${fmtRub(summary.today?.net_pnl_rub)}</span>`],
           ["Signals", fmtNum(summary.today?.signals_detected || 0, 0)],
           ["Snapshots", fmtNum(summary.today?.snapshots_processed || 0, 0)],
+          ["In-Window Snapshots", fmtNum(summary.today?.recorded_snapshots || 0, 0)],
           ["Overall Trades", fmtNum(summary.overall?.trade_count || 0, 0)],
           ["Overall Net PnL", `<span class="${pnlClass(summary.overall?.net_pnl_rub)}">${fmtRub(summary.overall?.net_pnl_rub)}</span>`],
           ["Analysis", summary.analysis?.assessment || summary.analysis?.status || "—"],
@@ -751,8 +752,9 @@ HTML = """<!doctype html>
         document.getElementById("todayTrades").textContent = fmtNum(todayStats?.trade_count || 0, 0);
         document.getElementById("allTrades").textContent = fmtNum(overallStats?.trade_count || 0, 0);
 
+        const marketHistory = state.market_history || {};
         document.getElementById("subline").textContent =
-          `watchlist: ${(state.watchlist || []).join(", ")} | schedule: ${state.entry_schedule?.start || "—"}-${state.entry_schedule?.end || "—"} ${state.entry_schedule?.timezone || ""} | updated: ${state.updated_at || "—"} | snapshots: ${state.snapshots_processed || 0} | signals: ${state.signals_detected || 0}`;
+          `watchlist: ${(state.watchlist || []).join(", ")} | schedule: ${state.entry_schedule?.start || "—"}-${state.entry_schedule?.end || "—"} ${state.entry_schedule?.timezone || ""} | updated: ${state.updated_at || "—"} | processed: ${state.snapshots_processed || 0} | in-window today: ${marketHistory.recorded_snapshots_today || 0} | recorded total: ${marketHistory.recorded_snapshots_total || 0} | signals: ${state.signals_detected || 0}`;
 
         document.getElementById("positionsWrap").innerHTML = renderTable(
           ["Ticker", "Qty", "Entry", "Current Bid", "Entry Fee", "Opened"],
@@ -869,6 +871,15 @@ def _default_payload() -> dict[str, object]:
         },
         "snapshots_processed": 0,
         "signals_detected": 0,
+        "market_history": {
+            "recording_mode": "entry_window_only",
+            "entry_window_only": True,
+            "recorded_snapshots_total": 0,
+            "recorded_snapshots_today": 0,
+            "skipped_snapshots_total": 0,
+            "current_day": None,
+            "last_recorded_at": None,
+        },
         "realized_pnl_rub": "0",
         "blocked_reasons": {},
         "stats": {
