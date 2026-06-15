@@ -494,6 +494,7 @@ HTML = """<!doctype html>
       if (!parameters) return '<div class="empty">Нет strategy-params</div>';
       const risk = diagnostics?.paper_risk_profile || null;
       const activeGuards = riskControls?.active_ticker_guards || [];
+      const activeSessionGuards = riskControls?.active_session_guards || [];
       return renderTable(
         ["Param", "Value"],
         [
@@ -525,7 +526,9 @@ HTML = """<!doctype html>
           ["Daily Loss Limit", riskControls?.daily_loss_limit_rub ?? "—"],
           ["Ticker Loss Limit", riskControls?.intraday_ticker_loss_limit_rub ?? "—"],
           ["Ticker Loss Streak", riskControls?.intraday_ticker_max_consecutive_losses ?? "—"],
+          ["Session Guarded Tickers", riskControls?.intraday_session_max_guarded_tickers ?? "—"],
           ["Active Ticker Guards", activeGuards.map((item) => `${item.ticker} [${(item.reasons || []).join(", ")}]`).join(" | ") || "—"],
+          ["Active Session Guards", activeSessionGuards.map((item) => `${item.reason} (${item.guarded_tickers}/${item.max_guarded_tickers})`).join(" | ") || "—"],
           ["Cooldown", parameters.cooldown_seconds ?? "—"],
         ],
       );
@@ -942,8 +945,10 @@ def _default_payload() -> dict[str, object]:
             "daily_loss_limit_rub": None,
             "intraday_ticker_loss_limit_rub": None,
             "intraday_ticker_max_consecutive_losses": None,
+            "intraday_session_max_guarded_tickers": None,
             "cooldown_seconds": None,
             "active_ticker_guards": [],
+            "active_session_guards": [],
         },
         "active_restrictions": {
             "disabled_tickers": [],

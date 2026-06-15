@@ -34,6 +34,7 @@ TRACKED_STRATEGY_PROFILE_KEYS = frozenset(
         "SCALPER_REGIME_FILTER_MODE",
         "SCALPER_INTRADAY_TICKER_LOSS_LIMIT_RUB",
         "SCALPER_INTRADAY_TICKER_MAX_CONSECUTIVE_LOSSES",
+        "SCALPER_INTRADAY_SESSION_MAX_GUARDED_TICKERS",
         "SCALPER_MAX_OPEN_POSITIONS",
         "SCALPER_MAX_POSITION_NOTIONAL_RUB",
         "SCALPER_POSITION_SIZING_MODE",
@@ -191,6 +192,7 @@ class ScalperConfig:
     daily_loss_limit_rub: Decimal
     intraday_ticker_loss_limit_rub: Decimal
     intraday_ticker_max_consecutive_losses: int
+    intraday_session_max_guarded_tickers: int
     cooldown_seconds: float
     time_stop_seconds: float
     impulse_window_seconds: float
@@ -280,6 +282,10 @@ def load_config(args: argparse.Namespace, *, require_auth: bool = True) -> Scalp
         intraday_ticker_max_consecutive_losses=max(
             0,
             int(os.getenv("SCALPER_INTRADAY_TICKER_MAX_CONSECUTIVE_LOSSES", "4")),
+        ),
+        intraday_session_max_guarded_tickers=max(
+            0,
+            int(os.getenv("SCALPER_INTRADAY_SESSION_MAX_GUARDED_TICKERS", "0")),
         ),
         cooldown_seconds=float(os.getenv("SCALPER_COOLDOWN_SECONDS", "12")),
         time_stop_seconds=float(os.getenv("SCALPER_TIME_STOP_SECONDS", "8")),

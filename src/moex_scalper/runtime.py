@@ -105,9 +105,10 @@ class ScalperRuntime:
             ",".join(str(hour) for hour in self.active_restrictions.blocked_entry_hours) or "none",
         )
         LOGGER.info(
-            "Intraday ticker guard loss_limit=%s consecutive_losses=%s",
+            "Intraday guard ticker_loss_limit=%s consecutive_losses=%s session_max_guarded_tickers=%s",
             self.config.intraday_ticker_loss_limit_rub,
             self.config.intraday_ticker_max_consecutive_losses,
+            self.config.intraday_session_max_guarded_tickers,
         )
 
         self.started_at = datetime.now(timezone.utc)
@@ -320,6 +321,7 @@ class ScalperRuntime:
             str(item.get("ticker"))
             for item in self.risk.active_ticker_guards()
         }
+        prior_session_guards = list(self.risk.active_session_guards())
         self.risk.note_closed_trade(trade)
         if isinstance(executor, PaperExecutor):
             self._record_paper_trade(trade)
@@ -344,6 +346,15 @@ class ScalperRuntime:
                 item.get("realized_pnl_rub"),
                 item.get("consecutive_losses"),
             )
+        current_session_guards = list(self.risk.active_session_guards())
+        if current_session_guards and not prior_session_guards:
+            for item in current_session_guards:
+                LOGGER.warning(
+                    "SESSION_GUARD reason=%s guarded_tickers=%s max_guarded_tickers=%s",
+                    item.get("reason"),
+                    item.get("guarded_tickers"),
+                    item.get("max_guarded_tickers"),
+                )
 
     def _maybe_log_heartbeat(self, now: datetime) -> None:
         if self._last_heartbeat_at is not None and (now - self._last_heartbeat_at).total_seconds() < 15:
@@ -488,8 +499,12 @@ class ScalperRuntime:
                 "intraday_ticker_max_consecutive_losses": (
                     self.config.intraday_ticker_max_consecutive_losses
                 ),
+                "intraday_session_max_guarded_tickers": (
+                    self.config.intraday_session_max_guarded_tickers
+                ),
                 "cooldown_seconds": self.config.cooldown_seconds,
                 "active_ticker_guards": self.risk.active_ticker_guards(),
+                "active_session_guards": self.risk.active_session_guards(),
             },
             "active_restrictions": serialize_restrictions(self.active_restrictions),
             "entry_schedule": {

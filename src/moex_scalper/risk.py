@@ -57,6 +57,9 @@ class RiskManager:
             return False, "max_open_positions"
         if self.realized_pnl_rub <= -self.config.daily_loss_limit_rub:
             return False, "daily_loss_limit"
+        session_guard_reason = self.session_guard_reason()
+        if session_guard_reason is not None:
+            return False, session_guard_reason
         ticker_guard_reason = self.ticker_guard_reason(snapshot.instrument.ticker)
         if ticker_guard_reason is not None:
             return False, ticker_guard_reason
@@ -128,6 +131,26 @@ class RiskManager:
                 }
             )
         return result
+
+    def session_guard_reason(self) -> str | None:
+        max_guarded = self.config.intraday_session_max_guarded_tickers
+        if max_guarded <= 0:
+            return None
+        if len(self.active_ticker_guards()) >= max_guarded:
+            return "session_guarded_tickers_limit"
+        return None
+
+    def active_session_guards(self) -> list[dict[str, object]]:
+        reason = self.session_guard_reason()
+        if reason is None:
+            return []
+        return [
+            {
+                "reason": reason,
+                "guarded_tickers": len(self.active_ticker_guards()),
+                "max_guarded_tickers": self.config.intraday_session_max_guarded_tickers,
+            }
+        ]
 
     def _rebuild_ticker_state(self, trades: list[ClosedTrade]) -> None:
         self.ticker_realized_pnl_rub.clear()

@@ -141,6 +141,7 @@ def build_focus(payload: dict[str, Any]) -> list[str]:
     strategy_diagnostics = payload.get("strategy_diagnostics") or {}
     risk_controls = payload.get("risk_controls") or {}
     active_guards = list(risk_controls.get("active_ticker_guards") or [])
+    active_session_guards = list(risk_controls.get("active_session_guards") or [])
 
     if watchdog.get("status") not in {None, "healthy"}:
         focus.append(f"Watchdog status: {watchdog.get('status')}.")
@@ -193,6 +194,12 @@ def build_focus(payload: dict[str, Any]) -> list[str]:
             for item in active_guards[:3]
         )
         focus.append(f"Intraday ticker-guard сейчас удерживает новые входы: {guard_summary}.")
+    if active_session_guards:
+        session_guard_summary = ", ".join(
+            f"{item.get('reason')}({item.get('guarded_tickers')}/{item.get('max_guarded_tickers')})"
+            for item in active_session_guards
+        )
+        focus.append(f"Сессия поставлена на паузу по session-guard: {session_guard_summary}.")
     if analysis.get("assessment") == "insufficient_sample":
         focus.append("Trade sample пока недостаточен для устойчивых выводов.")
 
