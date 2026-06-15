@@ -197,7 +197,10 @@ def build_focus(payload: dict[str, Any]) -> list[str]:
             f"{item.get('ticker')}({','.join(str(reason_name) for reason_name in list(item.get('reasons') or []))})"
             for item in active_guards[:3]
         )
-        focus.append(f"Intraday ticker-guard сейчас удерживает новые входы: {guard_summary}.")
+        if any(item.get("guard_cooldown_until") for item in active_guards):
+            focus.append(f"Временный intraday ticker-guard сейчас охлаждает часть тикеров: {guard_summary}.")
+        else:
+            focus.append(f"Intraday ticker-guard сейчас удерживает новые входы: {guard_summary}.")
         if any(
             "ticker_consecutive_time_stop_losses_limit" in list(item.get("reasons") or [])
             for item in active_guards
@@ -282,6 +285,11 @@ def build_headline(payload: dict[str, Any]) -> str:
     if int(today.get("trade_count", 0) or 0) <= 0:
         return "Сегодня закрытых paper-сделок нет; продолжаем сбор сигнала и market-data."
     if active_guards:
+        if any(item.get("guard_cooldown_until") for item in active_guards):
+            return (
+                "Часть тикеров временно ушла в paper cooldown после intraday-guard; "
+                "остальные инструменты продолжают paper-торговлю."
+            )
         return (
             "Intraday ticker-guard уже сработал по части тикеров; "
             "остальные инструменты продолжают paper-торговлю."

@@ -152,6 +152,8 @@ class PaperRuntimeStore:
         current_day: str,
         realized_pnl_rub: Decimal,
         cooldown_until: dict[str, datetime],
+        ticker_guard_cooldown_until: dict[str, datetime],
+        ticker_guard_loss_anchor_rub: dict[str, Decimal],
         blocked_reasons: Counter[str],
         snapshots_processed: int,
         signals_detected: int,
@@ -172,6 +174,14 @@ class PaperRuntimeStore:
                 "cooldown_until": {
                     instrument_id: moment.isoformat()
                     for instrument_id, moment in cooldown_until.items()
+                },
+                "ticker_guard_cooldown_until": {
+                    ticker: moment.isoformat()
+                    for ticker, moment in ticker_guard_cooldown_until.items()
+                },
+                "ticker_guard_loss_anchor_rub": {
+                    ticker: str(value)
+                    for ticker, value in ticker_guard_loss_anchor_rub.items()
                 },
             },
             "blocked_reasons": dict(blocked_reasons),
@@ -312,6 +322,21 @@ def restore_runtime_entities(
         )
         if restored is not None
     }
+    ticker_guard_cooldown_until = {
+        str(ticker).upper(): restored
+        for ticker, restored in (
+            (
+                str(ticker),
+                _utc_iso_to_datetime(str(moment)),
+            )
+            for ticker, moment in dict(risk_payload.get("ticker_guard_cooldown_until", {})).items()
+        )
+        if restored is not None
+    }
+    ticker_guard_loss_anchor_rub = {
+        str(ticker).upper(): _decimal(value)
+        for ticker, value in dict(risk_payload.get("ticker_guard_loss_anchor_rub", {})).items()
+    }
     return {
         "cash_rub": _decimal(payload.get("cash_rub"), default="0"),
         "positions": positions,
@@ -321,6 +346,8 @@ def restore_runtime_entities(
         ),
         "risk_realized_pnl_rub": _decimal(risk_payload.get("realized_pnl_rub")),
         "cooldown_until": cooldown_until,
+        "ticker_guard_cooldown_until": ticker_guard_cooldown_until,
+        "ticker_guard_loss_anchor_rub": ticker_guard_loss_anchor_rub,
         "blocked_reasons": Counter(dict(payload.get("blocked_reasons", {}))),
         "snapshots_processed": int(payload.get("snapshots_processed", 0)),
         "signals_detected": int(payload.get("signals_detected", 0)),

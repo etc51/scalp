@@ -20,6 +20,7 @@ PARAMETER_ENV_MAP: dict[str, str] = {
     "min_expected_edge_bps": "SCALPER_MIN_EXPECTED_EDGE_BPS",
     "min_net_take_profit_bps": "SCALPER_MIN_NET_TAKE_PROFIT_BPS",
     "cooldown_seconds": "SCALPER_COOLDOWN_SECONDS",
+    "paper_ticker_guard_cooldown_seconds": "SCALPER_PAPER_TICKER_GUARD_COOLDOWN_SECONDS",
 }
 REGIME_FILTER_ENV_KEY = "SCALPER_REGIME_FILTER_MODE"
 STRATEGY_OVERLAY_ENV_KEY = "SCALPER_STRATEGY_OVERLAY_MODE"
@@ -418,6 +419,7 @@ def current_strategy_parameters(config: ScalperConfig) -> dict[str, str]:
             "min_expected_edge_bps": config.min_expected_edge_bps,
             "min_net_take_profit_bps": config.min_net_take_profit_bps,
             "cooldown_seconds": config.cooldown_seconds,
+            "paper_ticker_guard_cooldown_seconds": config.paper_ticker_guard_cooldown_seconds,
         }
     )
 

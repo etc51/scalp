@@ -107,10 +107,11 @@ class ScalperRuntime:
             ",".join(self.active_restrictions.blocked_ticker_hours) or "none",
         )
         LOGGER.info(
-            "Intraday guard ticker_loss_limit=%s consecutive_losses=%s consecutive_time_stop_losses=%s session_max_guarded_tickers=%s",
+            "Intraday guard ticker_loss_limit=%s consecutive_losses=%s consecutive_time_stop_losses=%s paper_ticker_guard_cooldown_seconds=%s session_max_guarded_tickers=%s",
             self.config.intraday_ticker_loss_limit_rub,
             self.config.intraday_ticker_max_consecutive_losses,
             self.config.intraday_ticker_max_consecutive_time_stop_losses,
+            self.config.paper_ticker_guard_cooldown_seconds,
             self.config.intraday_session_max_guarded_tickers,
         )
 
@@ -322,9 +323,9 @@ class ScalperRuntime:
         self.state.trades_today.append(trade)
         prior_guarded_tickers = {
             str(item.get("ticker"))
-            for item in self.risk.active_ticker_guards()
+            for item in self.risk.active_ticker_guards(now=trade.closed_at)
         }
-        prior_session_guards = list(self.risk.active_session_guards())
+        prior_session_guards = list(self.risk.active_session_guards(now=trade.closed_at))
         self.risk.note_closed_trade(trade)
         if isinstance(executor, PaperExecutor):
             self._record_paper_trade(trade)
@@ -338,19 +339,21 @@ class ScalperRuntime:
             trade.net_pnl_rub,
             self.risk.realized_pnl_rub,
         )
-        for item in self.risk.active_ticker_guards():
+        for item in self.risk.active_ticker_guards(now=trade.closed_at):
             ticker = str(item.get("ticker"))
             if ticker in prior_guarded_tickers:
                 continue
             LOGGER.warning(
-                "INTRADAY_GUARD ticker=%s reasons=%s realized=%s consecutive_losses=%s consecutive_time_stop_losses=%s",
+                "INTRADAY_GUARD ticker=%s reasons=%s realized=%s guard_realized=%s consecutive_losses=%s consecutive_time_stop_losses=%s cooldown_until=%s",
                 ticker,
                 ",".join(str(reason_name) for reason_name in list(item.get("reasons") or [])),
                 item.get("realized_pnl_rub"),
+                item.get("guard_realized_pnl_rub"),
                 item.get("consecutive_losses"),
                 item.get("consecutive_time_stop_losses"),
+                item.get("guard_cooldown_until"),
             )
-        current_session_guards = list(self.risk.active_session_guards())
+        current_session_guards = list(self.risk.active_session_guards(now=trade.closed_at))
         if current_session_guards and not prior_session_guards:
             for item in current_session_guards:
                 LOGGER.warning(
@@ -505,6 +508,9 @@ class ScalperRuntime:
                 ),
                 "intraday_ticker_max_consecutive_time_stop_losses": (
                     self.config.intraday_ticker_max_consecutive_time_stop_losses
+                ),
+                "paper_ticker_guard_cooldown_seconds": (
+                    self.config.paper_ticker_guard_cooldown_seconds
                 ),
                 "intraday_session_max_guarded_tickers": (
                     self.config.intraday_session_max_guarded_tickers
@@ -662,6 +668,8 @@ class ScalperRuntime:
             realized_pnl_rub=restored["risk_realized_pnl_rub"],
             current_day=restored["risk_current_day"],
             cooldown_until=restored["cooldown_until"],
+            ticker_guard_cooldown_until=restored["ticker_guard_cooldown_until"],
+            ticker_guard_loss_anchor_rub=restored["ticker_guard_loss_anchor_rub"],
             trades_today=self.state.trades_today,
             now=now,
         )
@@ -697,6 +705,8 @@ class ScalperRuntime:
                 current_day=self.risk.current_day,
                 realized_pnl_rub=self.risk.realized_pnl_rub,
                 cooldown_until=self.risk.cooldown_until,
+                ticker_guard_cooldown_until=self.risk.ticker_guard_cooldown_until,
+                ticker_guard_loss_anchor_rub=self.risk.ticker_guard_loss_anchor_rub,
                 blocked_reasons=self.state.blocked_reasons,
                 snapshots_processed=self.state.snapshots_processed,
                 signals_detected=self.state.signals_detected,

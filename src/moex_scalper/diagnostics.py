@@ -13,6 +13,12 @@ def get_roundtrip_commission_bps(config: ScalperConfig) -> Decimal:
 
 def build_paper_risk_profile(config: ScalperConfig) -> dict[str, str]:
     leverage = config.paper_max_gross_leverage
+    guard_cooldown_minutes = round(config.paper_ticker_guard_cooldown_seconds / 60, 1)
+    guard_policy = (
+        f"Timed paper ticker rearm after {guard_cooldown_minutes:g} min cooldown"
+        if config.mode == "paper" and config.paper_ticker_guard_cooldown_seconds > 0
+        else "Ticker guards stay active for the full trading day"
+    )
     if leverage <= Decimal("1.2"):
         return {
             "stage": "Conservative validation",
@@ -21,6 +27,7 @@ def build_paper_risk_profile(config: ScalperConfig) -> dict[str, str]:
             "decision": "Hold at 1.2x until expectancy is proven",
             "promotion_rule": "Move to 1.5x only after 100+ closed paper trades, profit factor >= 1.15, positive expectancy, and no repeated daily loss-limit breaches",
             "rollback_rule": "Drop back to 1.0x if the recent sample turns negative or daily loss-limit triggers start repeating",
+            "ticker_guard_policy": guard_policy,
         }
     if leverage <= Decimal("1.5"):
         return {
@@ -30,6 +37,7 @@ def build_paper_risk_profile(config: ScalperConfig) -> dict[str, str]:
             "decision": "Use 1.5x only after a positive sample is confirmed",
             "promotion_rule": "Hold here only while profit factor and expectancy stay positive through new samples",
             "rollback_rule": "Drop back to 1.2x if drawdown or daily loss-limit pressure increases",
+            "ticker_guard_policy": guard_policy,
         }
     return {
         "stage": "Aggressive for paper scalping",
@@ -38,6 +46,7 @@ def build_paper_risk_profile(config: ScalperConfig) -> dict[str, str]:
         "decision": "Not recommended for the current validation phase",
         "promotion_rule": "Do not raise leverage further without a clear statistical edge",
         "rollback_rule": "Reduce leverage if stability is not already proven",
+        "ticker_guard_policy": guard_policy,
     }
 
 
@@ -96,6 +105,7 @@ def build_strategy_diagnostics(config: ScalperConfig) -> dict[str, Any]:
         "entry_modes": "long+short" if config.allow_short else "long_only",
         "regime_filter_mode": config.regime_filter_mode,
         "strategy_overlay_mode": config.strategy_overlay_mode,
+        "paper_ticker_guard_cooldown_seconds": config.paper_ticker_guard_cooldown_seconds,
         "premium_roundtrip_commission_bps": str(roundtrip_commission_bps),
         "configured_take_profit_bps": str(config.take_profit_bps),
         "configured_net_take_profit_bps": str(net_take_profit_bps),
