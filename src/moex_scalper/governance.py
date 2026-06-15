@@ -69,13 +69,13 @@ def run_governor(
     tuning_preview = tune_parameters(
         config,
         apply=False,
-        write_report=False,
+        write_report=write_report,
         env_path=env_path,
     )
     restrictions_preview = build_restrictions(
         config,
         apply=False,
-        write_report=False,
+        write_report=write_report,
     )
     evidence = build_evidence_snapshot(
         state_payload=state_payload,
