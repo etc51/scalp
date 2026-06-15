@@ -11,7 +11,7 @@ from typing import Any, Callable
 from .commission import CommissionModel
 from .config import ScalperConfig
 from .diagnostics import is_strategy_config_viable
-from .domain import ClosedTrade, MarketSnapshot, Position
+from .domain import ClosedTrade, MarketSnapshot, Position, Side
 from .entry_window import moment_in_entry_window
 from .execution import PaperExecutor
 from .market_history import load_snapshots_from_paths, snapshot_path_for_date
