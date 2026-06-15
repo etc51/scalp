@@ -680,6 +680,8 @@ HTML = """<!doctype html>
       if (!summary) return '<div class="empty">Пока нет research-report</div>';
       const regimeCandidate = summary?.best_regime_candidate || null;
       const regimeRecommendation = summary?.regime_recommendation || null;
+      const strategyLabCandidate = summary?.best_strategy_lab_candidate || null;
+      const strategyLabRecommendation = summary?.strategy_lab_recommendation || null;
       return renderTable(
         ["Metric", "Value"],
         [
@@ -695,6 +697,8 @@ HTML = """<!doctype html>
           ["Weakest Return", summary.weakest_return_ticker ? `${summary.weakest_return_ticker.ticker} (${fmtNum(summary.weakest_return_ticker.session_return_bps, 2)} bps)` : "—"],
           ["Highest RSI", summary.highest_rsi_ticker ? `${summary.highest_rsi_ticker.ticker} (${fmtNum(summary.highest_rsi_ticker.rsi14, 1)})` : "—"],
           ["Highest Volatility", summary.highest_volatility_ticker ? `${summary.highest_volatility_ticker.ticker} (${fmtNum(summary.highest_volatility_ticker.realized_volatility_bps, 2)} bps)` : "—"],
+          ["Best Strategy Lab", strategyLabCandidate ? `${strategyLabCandidate.name} (${fmtRub(strategyLabCandidate.delta_vs_baseline_rub)} vs lab baseline)` : "—"],
+          ["Strategy Lab Recommendation", strategyLabRecommendation?.reason || "—"],
           ["Best Regime Preview", regimeCandidate ? `${regimeCandidate.name} (${fmtRub(regimeCandidate.delta_vs_baseline_rub)} vs baseline)` : "—"],
           ["Regime Recommendation", regimeRecommendation?.reason || "—"],
           ["Focus", (research?.focus || []).map((item) => item.message).join(" | ") || "—"],
@@ -705,6 +709,8 @@ HTML = """<!doctype html>
     const renderDailySummary = (summary) => {
       if (!summary) return '<div class="empty">Пока нет daily-summary</div>';
       const activeGuards = summary.risk_controls?.active_ticker_guards || [];
+      const researchBest = summary.research?.best_strategy_lab_candidate || null;
+      const researchRecommendation = summary.research?.strategy_lab_recommendation || null;
       return renderTable(
         ["Metric", "Value"],
         [
@@ -722,6 +728,8 @@ HTML = """<!doctype html>
           ["Ticker Guards", activeGuards.map((item) => `${item.ticker} [${(item.reasons || []).join(", ")}]`).join(" | ") || "—"],
           ["Optimizer", summary.optimizer?.status || "—"],
           ["Research", summary.research?.status || "—"],
+          ["Strategy Lab", researchBest ? `${researchBest.name} (${fmtRub(researchBest.delta_vs_baseline_rub)} vs lab baseline)` : "—"],
+          ["Strategy Lab Recommendation", researchRecommendation?.reason || "—"],
           ["Watchdog", summary.watchdog?.status || "—"],
         ],
       );
@@ -749,7 +757,13 @@ HTML = """<!doctype html>
           fmtNum(item.average_spread_bps, 2) + " bps",
         ]),
       ) : '<div class="empty">Пока нет ticker-research</div>';
-      return tickerTable + `<div class="stack-gap"></div>` + renderResearchRegime(research);
+      return (
+        tickerTable
+        + `<div class="stack-gap"></div>`
+        + renderResearchRegime(research)
+        + `<div class="stack-gap"></div>`
+        + renderResearchStrategyLab(research)
+      );
     };
 
     const renderResearchRegime = (research) => {
@@ -767,6 +781,34 @@ HTML = """<!doctype html>
           ["Filter", "Profile", "Trades", "Signals", "Win Rate", "Net PnL", "Delta", "PF"],
           rows.map((item) => [
             item.name,
+            item.entry_modes || "—",
+            fmtNum(item.trade_count, 0),
+            fmtNum(item.signals_detected, 0),
+            fmtNum(item.win_rate_pct, 2) + " %",
+            `<span class="${pnlClass(item.net_pnl_rub)}">${fmtRub(item.net_pnl_rub)}</span>`,
+            `<span class="${pnlClass(item.delta_vs_baseline_rub)}">${fmtRub(item.delta_vs_baseline_rub)}</span>`,
+            fmtNum(item.profit_factor, 2),
+          ]),
+        )
+      );
+    };
+
+    const renderResearchStrategyLab = (research) => {
+      const lab = research?.strategy_lab || null;
+      const rows = lab?.top || [];
+      if (!lab || !rows.length) return '<div class="empty">Пока нет strategy-lab</div>';
+      const recommendation = lab?.recommendation || null;
+      const lead = recommendation?.candidate
+        ? `<div class="empty">recommendation: ${recommendation.reason || "—"} | lead: ${recommendation.candidate.name} [${recommendation.candidate.entry_modes || "—"}] | delta vs lab baseline: ${fmtRub(recommendation.candidate.delta_vs_baseline_rub)}</div>`
+        : `<div class="empty">recommendation: ${recommendation?.reason || "—"}</div>`;
+      return (
+        `<div class="subhead">Strategy Lab</div>` +
+        lead +
+        renderTable(
+          ["Candidate", "Family", "Profile", "Trades", "Signals", "Win Rate", "Net PnL", "Delta", "PF"],
+          rows.map((item) => [
+            item.name,
+            item.family || "baseline",
             item.entry_modes || "—",
             fmtNum(item.trade_count, 0),
             fmtNum(item.signals_detected, 0),

@@ -82,6 +82,8 @@ def build_daily_summary(
             "status": (research or {}).get("status"),
             "indicator_backend": (research or {}).get("indicator_backend"),
             "snapshot_count": (research or {}).get("snapshot_count"),
+            "strategy_lab_recommendation": ((((research or {}).get("summary") or {}).get("strategy_lab_recommendation")) or {}),
+            "best_strategy_lab_candidate": ((((research or {}).get("summary") or {}).get("best_strategy_lab_candidate")) or {}),
             "focus": list((research or {}).get("focus") or []),
         },
         "doctor": {

@@ -9,12 +9,14 @@ from pathlib import Path
 from typing import Any
 
 from .config import ScalperConfig
+from .domain import Side
 from .indicators import classify_trend
 from .market_history import load_snapshots_from_paths
 from .optimizer import filter_snapshots_for_entry_window, resolve_snapshot_files, simulate_candidate
 
 
 REGIME_PREVIEW_MIN_TRADES = 3
+STRATEGY_LAB_MIN_TRADES = 3
 REGIME_FILTERS: list[dict[str, str]] = [
     {
         "name": "current_profile",
@@ -56,6 +58,40 @@ REGIME_FILTERS: list[dict[str, str]] = [
         "description": "Long+short: trend filter учитывает сторону сигнала.",
         "mode": "trend_side_aware",
         "allow_short": True,
+    },
+]
+STRATEGY_IDEAS: list[dict[str, Any]] = [
+    {
+        "name": "trend_pullback_long",
+        "description": "Trend pullback: EMA gap + MACD + умеренный RSI + средняя позиция в Bollinger.",
+        "family": "trend_pullback",
+        "entry_modes": "long_only",
+        "allow_short": False,
+        "overlay_mode": "trend_pullback_long",
+    },
+    {
+        "name": "stoch_trend_long",
+        "description": "Trend continuation: стохастик в бычьей зоне с подтверждением EMA и MACD.",
+        "family": "stoch_trend",
+        "entry_modes": "long_only",
+        "allow_short": False,
+        "overlay_mode": "stoch_trend_long",
+    },
+    {
+        "name": "opening_range_breakout_long",
+        "description": "Opening-range breakout вверх с подтверждением импульса и EMA/MACD.",
+        "family": "opening_range_breakout",
+        "entry_modes": "long_only",
+        "allow_short": False,
+        "overlay_mode": "opening_range_breakout_long",
+    },
+    {
+        "name": "mean_reversion_long_short",
+        "description": "Mean reversion от крайних Bollinger/RSI/Stoch состояний, long+short.",
+        "family": "mean_reversion",
+        "entry_modes": "long+short",
+        "allow_short": True,
+        "overlay_mode": "mean_reversion_long_short",
     },
 ]
 
@@ -213,19 +249,31 @@ def build_indicator_research(
         )
 
     ticker_reports.sort(key=lambda item: item["ticker"])
+    indicator_lookup = build_indicator_lookup(
+        enriched_parts,
+        pd_module=pd,
+    )
     regime_replay = build_regime_replay(
         config,
         snapshots,
+        top_n=top_n,
+    )
+    strategy_lab = build_strategy_lab(
+        config,
+        snapshots,
+        indicator_lookup=indicator_lookup,
         top_n=top_n,
     )
     summary = build_research_summary(
         ticker_reports,
         snapshot_count=len(snapshots),
         regime_replay=regime_replay,
+        strategy_lab=strategy_lab,
     )
     focus = build_research_focus(
         ticker_reports,
         regime_replay=regime_replay,
+        strategy_lab=strategy_lab,
     )
     payload = {
         "status": "ok",
@@ -239,6 +287,7 @@ def build_indicator_research(
         "summary": summary,
         "focus": focus,
         "regime_replay": regime_replay,
+        "strategy_lab": strategy_lab,
         "tickers": ticker_reports[: max(1, top_n)],
         "all_tickers_count": len(ticker_reports),
     }
@@ -251,6 +300,7 @@ def build_research_summary(
     *,
     snapshot_count: int,
     regime_replay: dict[str, Any] | None,
+    strategy_lab: dict[str, Any] | None,
 ) -> dict[str, Any]:
     bullish = sum(1 for item in tickers if item["trend_label"] == "bullish")
     bearish = sum(1 for item in tickers if item["trend_label"] == "bearish")
@@ -259,7 +309,22 @@ def build_research_summary(
     best_regime = recommendation.get("candidate")
     if best_regime is None and regime_replay:
         best_regime = next(
-            (item for item in list((regime_replay or {}).get("top") or []) if item.get("name") != "baseline"),
+            (
+                item
+                for item in list((regime_replay or {}).get("top") or [])
+                if not item.get("is_baseline", False)
+            ),
+            None,
+        )
+    strategy_recommendation = ((strategy_lab or {}).get("recommendation") or {}) if strategy_lab else {}
+    best_strategy = strategy_recommendation.get("candidate")
+    if best_strategy is None and strategy_lab:
+        best_strategy = next(
+            (
+                item
+                for item in list((strategy_lab or {}).get("top") or [])
+                if not item.get("is_baseline", False)
+            ),
             None,
         )
     return {
@@ -276,6 +341,8 @@ def build_research_summary(
         "highest_volatility_ticker": _best_by(tickers, "realized_volatility_bps", reverse=True),
         "best_regime_candidate": best_regime,
         "regime_recommendation": recommendation if regime_replay else None,
+        "best_strategy_lab_candidate": best_strategy,
+        "strategy_lab_recommendation": strategy_recommendation if strategy_lab else None,
     }
 
 
@@ -283,6 +350,7 @@ def build_research_focus(
     tickers: list[dict[str, Any]],
     *,
     regime_replay: dict[str, Any] | None,
+    strategy_lab: dict[str, Any] | None,
 ) -> list[dict[str, Any]]:
     if not tickers:
         return []
@@ -292,11 +360,28 @@ def build_research_focus(
     highest_vol = _best_by(tickers, "realized_volatility_bps", reverse=True)
     highest_rsi = _best_by(tickers, "rsi14", reverse=True)
 
-    if strongest is not None:
+    strategy_recommendation = ((strategy_lab or {}).get("recommendation") or {}) if strategy_lab else {}
+    strategy_candidate = dict(strategy_recommendation.get("candidate") or {})
+    if strategy_recommendation.get("eligible") and strategy_candidate:
         focus.append(
             {
-                "type": "strongest_return",
-                "message": f"Лучшая intraday-динамика у {strongest['ticker']}: {strongest['session_return_bps']:.2f} bps.",
+                "type": "strategy_lab_candidate",
+                "message": (
+                    f"Strategy lab лидирует {strategy_candidate['name']} "
+                    f"[{strategy_candidate.get('entry_modes', '—')}] "
+                    f"({strategy_candidate['delta_vs_baseline_rub']} RUB vs lab baseline)."
+                ),
+            }
+        )
+    elif strategy_candidate and strategy_candidate.get("delta_vs_baseline_rub") not in {None, "0"}:
+        focus.append(
+            {
+                "type": "strategy_lab_preview",
+                "message": (
+                    f"Strategy lab preview: {strategy_candidate['name']} "
+                    f"[{strategy_candidate.get('entry_modes', '—')}] "
+                    f"{strategy_candidate['delta_vs_baseline_rub']} RUB vs lab baseline."
+                ),
             }
         )
     recommendation = ((regime_replay or {}).get("recommendation") or {}) if regime_replay else {}
@@ -321,6 +406,13 @@ def build_research_focus(
                     f"[{candidate.get('entry_modes', '—')}] "
                     f"{candidate['delta_vs_baseline_rub']} RUB vs baseline."
                 ),
+            }
+        )
+    if strongest is not None:
+        focus.append(
+            {
+                "type": "strongest_return",
+                "message": f"Лучшая intraday-динамика у {strongest['ticker']}: {strongest['session_return_bps']:.2f} bps.",
             }
         )
     if weakest is not None:
@@ -403,6 +495,51 @@ def build_minute_indicator_frame(
     minute["ema_gap_bps"] = (
         ((minute["ema9"] / minute["ema21"]) - 1) * 10000
     ).where(minute["ema21"] != 0)
+    rolling_basis = close.rolling(window=20, min_periods=20).mean()
+    rolling_std = close.rolling(window=20, min_periods=20).std(ddof=0)
+    minute["bb_mid"] = rolling_basis
+    minute["bb_upper"] = rolling_basis + (rolling_std * 2)
+    minute["bb_lower"] = rolling_basis - (rolling_std * 2)
+    bb_width = minute["bb_upper"] - minute["bb_lower"]
+    minute["bb_pos"] = (
+        (close - minute["bb_lower"]) / bb_width
+    ).where(bb_width != 0)
+
+    rolling_low = minute["low"].rolling(window=14, min_periods=14).min()
+    rolling_high = minute["high"].rolling(window=14, min_periods=14).max()
+    stoch_range = rolling_high - rolling_low
+    minute["stoch_k"] = (
+        ((close - rolling_low) / stoch_range) * 100
+    ).where(stoch_range != 0)
+    minute["stoch_d"] = minute["stoch_k"].rolling(window=3, min_periods=3).mean()
+
+    minute["session_date"] = minute.index.tz_localize(None).normalize()
+    minute["session_bar_index"] = minute.groupby("session_date").cumcount()
+    minute["session_open"] = minute.groupby("session_date")["open"].transform("first")
+    minute["session_return_bps"] = (
+        ((close / minute["session_open"]) - 1) * 10000
+    ).where(minute["session_open"] != 0)
+
+    opening_window_mask = minute["session_bar_index"] < 5
+    minute["opening_range_high"] = (
+        minute["high"]
+        .where(opening_window_mask)
+        .groupby(minute["session_date"])
+        .transform("max")
+    )
+    minute["opening_range_low"] = (
+        minute["low"]
+        .where(opening_window_mask)
+        .groupby(minute["session_date"])
+        .transform("min")
+    )
+    minute["opening_range_ready"] = minute["session_bar_index"] >= 5
+    minute["opening_range_breakout_bps"] = (
+        ((close / minute["opening_range_high"]) - 1) * 10000
+    ).where(minute["opening_range_high"] != 0)
+    minute["opening_range_breakdown_bps"] = (
+        ((close / minute["opening_range_low"]) - 1) * 10000
+    ).where(minute["opening_range_low"] != 0)
     minute["trend_label"] = minute.apply(
         lambda row: classify_trend(
             rsi14=_coerce_float(row.get("rsi14")),
@@ -420,13 +557,316 @@ def enrich_snapshot_frame_with_regime(
     *,
     pd_module: Any,
 ) -> Any:
-    indicator_frame = minute.reset_index()[["at", "trend_label", "rsi14", "ema_gap_bps", "macd_hist"]].copy()
+    indicator_columns = [
+        "at",
+        "trend_label",
+        "rsi14",
+        "ema_gap_bps",
+        "macd_hist",
+        "bb_pos",
+        "stoch_k",
+        "stoch_d",
+        "session_return_bps",
+        "opening_range_high",
+        "opening_range_low",
+        "opening_range_breakout_bps",
+        "opening_range_breakdown_bps",
+        "opening_range_ready",
+    ]
+    indicator_frame = minute.reset_index()[indicator_columns].copy()
     indicator_frame["minute_at"] = indicator_frame["at"] + pd_module.Timedelta(minutes=1)
     indicator_frame = indicator_frame.drop(columns=["at"])
 
     enriched = ticker_frame.copy()
     enriched["minute_at"] = enriched["at"].dt.floor("min")
     return enriched.merge(indicator_frame, on="minute_at", how="left")
+
+
+def build_indicator_lookup(
+    enriched_parts: list[Any],
+    *,
+    pd_module: Any,
+) -> dict[str, dict[str, Any]]:
+    if not enriched_parts:
+        return {}
+    merged = pd_module.concat(enriched_parts, ignore_index=True)
+    if merged.empty or "snapshot_key" not in merged.columns:
+        return {}
+
+    preferred_columns = [
+        "snapshot_key",
+        "trend_label",
+        "rsi14",
+        "ema_gap_bps",
+        "macd_hist",
+        "bb_pos",
+        "stoch_k",
+        "stoch_d",
+        "session_return_bps",
+        "opening_range_high",
+        "opening_range_low",
+        "opening_range_breakout_bps",
+        "opening_range_breakdown_bps",
+        "opening_range_ready",
+    ]
+    available_columns = [column for column in preferred_columns if column in merged.columns]
+    trimmed = merged[available_columns].drop_duplicates(subset=["snapshot_key"], keep="last")
+    lookup: dict[str, dict[str, Any]] = {}
+    for row in trimmed.to_dict("records"):
+        snapshot_key = str(row.get("snapshot_key") or "").strip()
+        if not snapshot_key:
+            continue
+        payload = dict(row)
+        payload.pop("snapshot_key", None)
+        lookup[snapshot_key] = payload
+    return lookup
+
+
+def build_strategy_lab(
+    config: ScalperConfig,
+    snapshots: list[Any],
+    *,
+    indicator_lookup: dict[str, dict[str, Any]],
+    top_n: int,
+) -> dict[str, Any]:
+    if not indicator_lookup:
+        return {
+            "status": "indicator_lookup_empty",
+            "candidate_count": 0,
+            "baseline": None,
+            "top": [],
+            "recommendation": {"eligible": False, "reason": "indicator_lookup_empty", "candidate": None},
+        }
+
+    baseline_config = replace(
+        config,
+        regime_filter_mode="off",
+    )
+    baseline_raw = simulate_candidate(
+        baseline_config,
+        snapshots,
+    )
+    baseline_item = summarize_strategy_candidate(
+        {
+            "name": "baseline_signal_engine",
+            "description": "Текущий signal-engine без дополнительного TA overlay.",
+            "family": "baseline",
+            "entry_modes": "long+short" if baseline_config.allow_short else "long_only",
+            "allow_short": baseline_config.allow_short,
+            "overlay_mode": "baseline",
+            "is_baseline": True,
+        },
+        baseline_raw,
+        candidate_config=baseline_config,
+    )
+
+    results = [baseline_item]
+    for candidate in STRATEGY_IDEAS:
+        candidate_config = build_strategy_lab_candidate_config(config, candidate)
+        raw = simulate_candidate(
+            candidate_config,
+            snapshots,
+            entry_filter=build_strategy_entry_filter(
+                str(candidate.get("overlay_mode") or ""),
+                indicator_lookup=indicator_lookup,
+            ),
+        )
+        results.append(
+            summarize_strategy_candidate(
+                candidate,
+                raw,
+                candidate_config=candidate_config,
+            )
+        )
+
+    baseline_net = Decimal(str(baseline_item.get("net_pnl_rub", "0")))
+    for item in results:
+        item["delta_vs_baseline_rub"] = str(Decimal(str(item.get("net_pnl_rub", "0"))) - baseline_net)
+
+    ranked = sorted(results, key=strategy_lab_sort_key, reverse=True)
+    recommendation = build_strategy_lab_recommendation(
+        ranked,
+        baseline=baseline_item,
+    )
+    return {
+        "status": "ok",
+        "candidate_count": len(results),
+        "baseline": baseline_item,
+        "top": ranked[: max(1, top_n)],
+        "recommendation": recommendation,
+    }
+
+
+def build_strategy_lab_candidate_config(
+    config: ScalperConfig,
+    candidate: dict[str, Any],
+) -> ScalperConfig:
+    return replace(
+        config,
+        regime_filter_mode="off",
+        allow_short=bool(candidate.get("allow_short", False)),
+    )
+
+
+def summarize_strategy_candidate(
+    candidate: dict[str, Any],
+    raw: dict[str, Any],
+    *,
+    candidate_config: ScalperConfig,
+) -> dict[str, Any]:
+    is_baseline = bool(candidate.get("is_baseline", False))
+    return {
+        "name": candidate["name"],
+        "description": candidate["description"],
+        "family": candidate.get("family"),
+        "overlay_mode": candidate.get("overlay_mode"),
+        "allow_short": candidate_config.allow_short,
+        "entry_modes": "long+short" if candidate_config.allow_short else "long_only",
+        "regime_filter_mode": candidate_config.regime_filter_mode,
+        "is_baseline": is_baseline,
+        "trade_count": int(raw.get("trade_count", 0)),
+        "wins": int(raw.get("wins", 0)),
+        "losses": int(raw.get("losses", 0)),
+        "win_rate_pct": raw.get("win_rate_pct"),
+        "signals_detected": int(raw.get("signals_detected", 0)),
+        "filtered_signal_count": int(raw.get("filtered_signal_count", 0)),
+        "net_pnl_rub": raw.get("net_pnl_rub"),
+        "equity_delta_rub": raw.get("equity_delta_rub"),
+        "profit_factor": raw.get("profit_factor"),
+        "expectancy_bps": raw.get("expectancy_bps"),
+        "average_trade_rub": raw.get("average_trade_rub"),
+        "max_drawdown_rub": raw.get("max_drawdown_rub"),
+        "blocked_top": dict(raw.get("blocked_top") or {}),
+        "score": raw.get("score"),
+    }
+
+
+def strategy_lab_sort_key(item: dict[str, Any]) -> tuple[Decimal, Decimal, Decimal, int]:
+    return (
+        Decimal(str(item.get("score", "0"))),
+        Decimal(str(item.get("net_pnl_rub", "0"))),
+        Decimal(str(item.get("profit_factor", "0"))),
+        int(item.get("trade_count", 0)),
+    )
+
+
+def build_strategy_lab_recommendation(
+    ranked: list[dict[str, Any]],
+    *,
+    baseline: dict[str, Any] | None,
+) -> dict[str, Any]:
+    non_baseline = [item for item in ranked if not item.get("is_baseline", False)]
+    if not non_baseline:
+        return {"eligible": False, "reason": "no_candidates", "candidate": None}
+    top = non_baseline[0]
+    delta = Decimal(str(top.get("delta_vs_baseline_rub", "0")))
+    if int(top.get("trade_count", 0)) < STRATEGY_LAB_MIN_TRADES:
+        return {"eligible": False, "reason": "insufficient_trade_sample", "candidate": top}
+    if baseline is None:
+        return {"eligible": False, "reason": "missing_baseline", "candidate": top}
+    if delta <= 0:
+        return {"eligible": False, "reason": "no_positive_delta_vs_baseline", "candidate": top}
+    return {"eligible": True, "reason": "best_positive_strategy_overlay", "candidate": top}
+
+
+def build_strategy_entry_filter(
+    overlay_mode: str,
+    *,
+    indicator_lookup: dict[str, dict[str, Any]],
+):
+    def entry_filter(snapshot: Any, signal: Any) -> tuple[bool, str | None]:
+        indicator_state = indicator_lookup.get(build_snapshot_key(snapshot))
+        if indicator_state is None:
+            return False, "strategy_lab_missing_indicator_state"
+        return evaluate_strategy_overlay(
+            overlay_mode,
+            indicator_state=indicator_state,
+            signal_side=signal.side,
+        )
+
+    return entry_filter
+
+
+def evaluate_strategy_overlay(
+    overlay_mode: str,
+    *,
+    indicator_state: dict[str, Any],
+    signal_side: Side,
+) -> tuple[bool, str | None]:
+    trend_label = str(indicator_state.get("trend_label") or "neutral")
+    rsi14 = _coerce_float(indicator_state.get("rsi14"))
+    ema_gap_bps = _coerce_float(indicator_state.get("ema_gap_bps"))
+    macd_hist = _coerce_float(indicator_state.get("macd_hist"))
+    bb_pos = _coerce_float(indicator_state.get("bb_pos"))
+    stoch_k = _coerce_float(indicator_state.get("stoch_k"))
+    session_return_bps = _coerce_float(indicator_state.get("session_return_bps"))
+    opening_range_breakout_bps = _coerce_float(indicator_state.get("opening_range_breakout_bps"))
+    opening_range_breakdown_bps = _coerce_float(indicator_state.get("opening_range_breakdown_bps"))
+    opening_range_ready = _as_bool(indicator_state.get("opening_range_ready"))
+
+    if overlay_mode == "trend_pullback_long":
+        if signal_side is not Side.BUY:
+            return False, "strategy_lab_long_only"
+        if trend_label != "bullish":
+            return False, "strategy_lab_trend_not_bullish"
+        if ema_gap_bps is None or ema_gap_bps <= 0.5:
+            return False, "strategy_lab_ema_gap_too_small"
+        if macd_hist is None or macd_hist <= 0:
+            return False, "strategy_lab_macd_not_positive"
+        if not _between(rsi14, 48, 72):
+            return False, "strategy_lab_rsi_not_pullback_band"
+        if not _between(bb_pos, 0.25, 0.80):
+            return False, "strategy_lab_bb_not_pullback_band"
+        return True, None
+
+    if overlay_mode == "stoch_trend_long":
+        if signal_side is not Side.BUY:
+            return False, "strategy_lab_long_only"
+        if ema_gap_bps is None or ema_gap_bps <= 0:
+            return False, "strategy_lab_ema_gap_not_positive"
+        if macd_hist is None or macd_hist <= 0:
+            return False, "strategy_lab_macd_not_positive"
+        if not _between(stoch_k, 55, 95):
+            return False, "strategy_lab_stoch_not_bullish"
+        if session_return_bps is not None and session_return_bps < -5:
+            return False, "strategy_lab_session_drift_negative"
+        return True, None
+
+    if overlay_mode == "opening_range_breakout_long":
+        if signal_side is not Side.BUY:
+            return False, "strategy_lab_long_only"
+        if not opening_range_ready:
+            return False, "strategy_lab_opening_range_warmup"
+        if opening_range_breakout_bps is None or opening_range_breakout_bps <= 1.0:
+            return False, "strategy_lab_no_breakout"
+        if ema_gap_bps is None or ema_gap_bps <= 0:
+            return False, "strategy_lab_ema_gap_not_positive"
+        if macd_hist is None or macd_hist <= 0:
+            return False, "strategy_lab_macd_not_positive"
+        if session_return_bps is None or session_return_bps <= 0:
+            return False, "strategy_lab_session_not_positive"
+        return True, None
+
+    if overlay_mode == "mean_reversion_long_short":
+        if signal_side is Side.BUY:
+            if not _between(bb_pos, -0.50, 0.45):
+                return False, "strategy_lab_long_not_discounted"
+            if not _between(rsi14, 20, 55):
+                return False, "strategy_lab_long_rsi_not_discounted"
+            if not _between(stoch_k, 0, 45):
+                return False, "strategy_lab_long_stoch_not_discounted"
+            return True, None
+        if not _between(bb_pos, 0.55, 1.50):
+            return False, "strategy_lab_short_not_premium"
+        if not _between(rsi14, 45, 85):
+            return False, "strategy_lab_short_rsi_not_premium"
+        if not _between(stoch_k, 55, 100):
+            return False, "strategy_lab_short_stoch_not_premium"
+        if opening_range_ready and opening_range_breakdown_bps is not None and opening_range_breakdown_bps > 5:
+            return False, "strategy_lab_short_breakdown_too_deep"
+        return True, None
+
+    return True, None
 
 
 def build_regime_replay(
@@ -597,3 +1037,18 @@ def _coerce_float(value: Any) -> float | None:
     if math.isnan(numeric) or math.isinf(numeric):
         return None
     return numeric
+
+
+def _between(value: float | None, lower: float, upper: float) -> bool:
+    if value is None:
+        return False
+    return lower <= value <= upper
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    text = str(value).strip().lower()
+    return text in {"1", "true", "yes", "on"}
