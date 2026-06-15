@@ -197,6 +197,7 @@ Version-controlled strategy profile:
 
 - tracked file `config/strategy_profile.env` now overlays a safe subset of strategy and paper-risk keys after `.env`
 - current first use is deliberate downside control: `SCALPER_MAX_SPREAD_BPS=1.5` is now tracked from GitHub because the corrected paper replay shows wide-spread entries remain a fee drag
+- watchlist expansion can also live there through `SCALPER_WATCHLIST`, so new liquid MOEX tickers can be rolled out through GitHub without editing server-local secrets
 - intraday guard settings can also live there, so server updates no longer require manual `.env` edits for routine paper strategy tweaks
 - pre-existing real environment variables still win, so an explicit server-side override can temporarily bypass the tracked profile if needed
 
