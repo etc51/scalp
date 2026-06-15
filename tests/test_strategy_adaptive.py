@@ -1,0 +1,199 @@
+from __future__ import annotations
+
+import unittest
+from datetime import datetime, time, timedelta, timezone
+from decimal import Decimal
+from pathlib import Path
+
+from moex_scalper.config import ScalperConfig
+from moex_scalper.domain import InstrumentSpec, MarketSnapshot, Side
+from moex_scalper.strategy import ModerateScalpingStrategy
+
+
+def build_config(*, mode: str = "paper") -> ScalperConfig:
+    return ScalperConfig(
+        token="token",
+        account_id="account",
+        mode=mode,
+        target="invest-public-api.tbank.ru:443",
+        class_code="TQBR",
+        watchlist=("SBER",),
+        orderbook_depth=1,
+        order_quantity_lots=1,
+        max_position_notional_rub=Decimal("30000"),
+        daily_loss_limit_rub=Decimal("2500"),
+        intraday_ticker_loss_limit_rub=Decimal("250"),
+        intraday_ticker_max_consecutive_losses=4,
+        intraday_ticker_max_consecutive_time_stop_losses=2,
+        paper_ticker_guard_cooldown_seconds=2700.0,
+        paper_continue_after_daily_loss_limit=True,
+        intraday_session_max_guarded_tickers=0,
+        cooldown_seconds=12.0,
+        time_stop_seconds=8.0,
+        impulse_window_seconds=2.5,
+        max_spread_bps=Decimal("2.5"),
+        min_imbalance=Decimal("0.58"),
+        min_impulse_bps=Decimal("0.5"),
+        take_profit_bps=Decimal("18"),
+        stop_loss_bps=Decimal("10"),
+        min_expected_edge_bps=Decimal("4"),
+        min_net_take_profit_bps=Decimal("4"),
+        target_net_take_profit_buffer_bps=Decimal("2"),
+        regime_filter_mode="off",
+        strategy_overlay_mode="off",
+        premium_share_commission_bps=Decimal("4"),
+        paper_initial_cash_rub=Decimal("300000"),
+        paper_max_gross_leverage=Decimal("1.2"),
+        position_sizing_mode="equal_weight_cash",
+        timezone_name="UTC",
+        timezone=timezone.utc,
+        entry_weekdays=(0, 1, 2, 3, 4),
+        entry_start_time=time(10, 15),
+        entry_end_time=time(17, 45),
+        allow_short=True,
+        max_open_positions=4,
+        run_duration_seconds=0.0,
+        runtime_dir=Path("runtime"),
+        state_heartbeat_seconds=30.0,
+        stream_idle_reconnect_seconds=45.0,
+        stream_reconnect_delay_seconds=1.0,
+        watchdog_max_state_age_seconds=120,
+        watchdog_max_market_data_age_seconds=90,
+        watchdog_market_data_warmup_seconds=90,
+        watchdog_timeout_seconds=3.0,
+        watchdog_check_dashboard_http=True,
+    )
+
+
+def build_instrument() -> InstrumentSpec:
+    return InstrumentSpec(
+        instrument_id="instrument-sber",
+        ticker="SBER",
+        class_code="TQBR",
+        figi="FIGI",
+        lot_size=10,
+        min_price_increment=Decimal("0.01"),
+        currency="RUB",
+        name="Sberbank",
+    )
+
+
+def build_snapshot(
+    instrument: InstrumentSpec,
+    at: datetime,
+    *,
+    bid_price: str,
+    ask_price: str,
+    bid_quantity: int = 160,
+    ask_quantity: int = 100,
+) -> MarketSnapshot:
+    return MarketSnapshot(
+        instrument=instrument,
+        bid_price=Decimal(bid_price),
+        ask_price=Decimal(ask_price),
+        bid_quantity=bid_quantity,
+        ask_quantity=ask_quantity,
+        at=at,
+    )
+
+
+class AdaptiveStrategyTests(unittest.TestCase):
+    def test_paper_mode_uses_adaptive_profile_for_small_impulse(self) -> None:
+        strategy = ModerateScalpingStrategy(build_config(mode="paper"))
+        instrument = build_instrument()
+        start = datetime(2026, 6, 15, 10, 15, tzinfo=timezone.utc)
+
+        strategy.diagnose_entry(
+            build_snapshot(
+                instrument,
+                start,
+                bid_price="99.99",
+                ask_price="100.01",
+            ),
+            has_open_position=False,
+        )
+        signal, reason, metrics = strategy.diagnose_entry(
+            build_snapshot(
+                instrument,
+                start + timedelta(seconds=2),
+                bid_price="99.993",
+                ask_price="100.013",
+            ),
+            has_open_position=False,
+        )
+
+        self.assertEqual(reason, "ok")
+        assert signal is not None
+        self.assertEqual(signal.side, Side.BUY)
+        self.assertEqual(signal.take_profit_bps, Decimal("16"))
+        self.assertEqual(signal.stop_loss_bps, Decimal("8"))
+        self.assertEqual(signal.time_stop_seconds, 6.0)
+        self.assertIn("profile=adaptive", signal.reason)
+        self.assertEqual(metrics["entry_profile"], "adaptive")
+        self.assertEqual(metrics["long_impulse_pass"], "false")
+        self.assertEqual(metrics["adaptive_long_impulse_pass"], "true")
+        self.assertGreater(Decimal(str(metrics["expected_edge_bps"])), Decimal("2"))
+
+    def test_paper_mode_downgrades_to_adaptive_when_spread_only_passes_relaxed_band(self) -> None:
+        strategy = ModerateScalpingStrategy(build_config(mode="paper"))
+        instrument = build_instrument()
+        start = datetime(2026, 6, 15, 10, 15, tzinfo=timezone.utc)
+
+        strategy.diagnose_entry(
+            build_snapshot(
+                instrument,
+                start,
+                bid_price="99.99",
+                ask_price="100.01",
+            ),
+            has_open_position=False,
+        )
+        signal, reason, metrics = strategy.diagnose_entry(
+            build_snapshot(
+                instrument,
+                start + timedelta(seconds=2),
+                bid_price="99.9885",
+                ask_price="100.0235",
+            ),
+            has_open_position=False,
+        )
+
+        self.assertEqual(reason, "ok")
+        assert signal is not None
+        self.assertEqual(metrics["strict_spread_pass"], "false")
+        self.assertEqual(metrics["adaptive_spread_pass"], "true")
+        self.assertEqual(metrics["entry_profile"], "adaptive")
+        self.assertIn("profile=adaptive", signal.reason)
+
+    def test_live_mode_keeps_small_impulse_blocked(self) -> None:
+        strategy = ModerateScalpingStrategy(build_config(mode="live"))
+        instrument = build_instrument()
+        start = datetime(2026, 6, 15, 10, 15, tzinfo=timezone.utc)
+
+        strategy.diagnose_entry(
+            build_snapshot(
+                instrument,
+                start,
+                bid_price="99.99",
+                ask_price="100.01",
+            ),
+            has_open_position=False,
+        )
+        signal, reason, metrics = strategy.diagnose_entry(
+            build_snapshot(
+                instrument,
+                start + timedelta(seconds=2),
+                bid_price="99.993",
+                ask_price="100.013",
+            ),
+            has_open_position=False,
+        )
+
+        self.assertIsNone(signal)
+        self.assertEqual(reason, "impulse_too_small")
+        self.assertEqual(metrics["adaptive_enabled"], "false")
+        self.assertEqual(metrics["adaptive_long_impulse_pass"], "false")
+
+
+if __name__ == "__main__":
+    unittest.main()

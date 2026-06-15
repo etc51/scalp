@@ -62,13 +62,45 @@ class ModerateScalpingStrategy:
             return None, "invalid_oldest_mid", {}
 
         impulse_bps = ((snapshot.mid_price - oldest_mid) / oldest_mid) * Decimal("10000")
+        adaptive_enabled = self._config.mode == "paper"
+        adaptive_spread_bps = self._config.max_spread_bps
+        adaptive_min_imbalance = self._config.min_imbalance
+        adaptive_min_impulse_bps = self._config.min_impulse_bps
+        adaptive_take_profit_bps = self._config.take_profit_bps
+        adaptive_stop_loss_bps = self._config.stop_loss_bps
+        adaptive_min_expected_edge_bps = self._config.min_expected_edge_bps
+        adaptive_time_stop_seconds = self._config.time_stop_seconds
+        adaptive_edge_multiplier = Decimal("1.5")
+        if adaptive_enabled:
+            adaptive_spread_bps = max(self._config.max_spread_bps, Decimal("1.5")) + Decimal("1.5")
+            adaptive_min_imbalance = max(Decimal("0.40"), self._config.min_imbalance - Decimal("0.10"))
+            adaptive_min_impulse_bps = max(Decimal("0.20"), self._config.min_impulse_bps * Decimal("0.5"))
+            adaptive_take_profit_bps = max(
+                self._commission_model.roundtrip_bps + self._config.min_net_take_profit_bps + Decimal("1"),
+                self._config.take_profit_bps - Decimal("2"),
+            )
+            adaptive_stop_loss_bps = max(Decimal("4"), self._config.stop_loss_bps - Decimal("2"))
+            adaptive_min_expected_edge_bps = max(Decimal("2"), self._config.min_expected_edge_bps - Decimal("2"))
+            adaptive_time_stop_seconds = max(3.0, round(self._config.time_stop_seconds * 0.75, 3))
+            adaptive_edge_multiplier = Decimal("4.0")
         metrics: dict[str, Decimal | str] = {
             "spread_bps": snapshot.spread_bps,
             "imbalance": snapshot.imbalance,
             "impulse_bps": impulse_bps,
             "roundtrip_commission_bps": self._commission_model.roundtrip_bps,
+            "adaptive_enabled": str(adaptive_enabled).lower(),
+            "adaptive_spread_bps": adaptive_spread_bps,
+            "adaptive_min_imbalance": adaptive_min_imbalance,
+            "adaptive_min_impulse_bps": adaptive_min_impulse_bps,
+            "adaptive_take_profit_bps": adaptive_take_profit_bps,
+            "adaptive_stop_loss_bps": adaptive_stop_loss_bps,
+            "adaptive_min_expected_edge_bps": adaptive_min_expected_edge_bps,
         }
-        if snapshot.spread_bps > self._config.max_spread_bps:
+        strict_spread_pass = snapshot.spread_bps <= self._config.max_spread_bps
+        adaptive_spread_pass = snapshot.spread_bps <= adaptive_spread_bps
+        metrics["strict_spread_pass"] = str(strict_spread_pass).lower()
+        metrics["adaptive_spread_pass"] = str(adaptive_spread_pass).lower()
+        if not adaptive_spread_pass:
             return None, "spread_too_wide", metrics
 
         long_imbalance_pass = snapshot.imbalance >= self._config.min_imbalance
@@ -76,33 +108,84 @@ class ModerateScalpingStrategy:
             self._config.allow_short
             and snapshot.imbalance <= (Decimal("1") - self._config.min_imbalance)
         )
+        adaptive_long_imbalance_pass = snapshot.imbalance >= adaptive_min_imbalance
+        adaptive_short_imbalance_pass = (
+            self._config.allow_short
+            and snapshot.imbalance <= (Decimal("1") - adaptive_min_imbalance)
+        )
         metrics["long_imbalance_pass"] = str(long_imbalance_pass).lower()
         metrics["short_imbalance_pass"] = str(short_imbalance_pass).lower()
-        if not long_imbalance_pass and not short_imbalance_pass:
+        metrics["adaptive_long_imbalance_pass"] = str(adaptive_long_imbalance_pass).lower()
+        metrics["adaptive_short_imbalance_pass"] = str(adaptive_short_imbalance_pass).lower()
+        if not adaptive_long_imbalance_pass and not adaptive_short_imbalance_pass:
             return None, "imbalance_too_low", metrics
 
         long_impulse_pass = impulse_bps >= self._config.min_impulse_bps
         short_impulse_pass = self._config.allow_short and impulse_bps <= -self._config.min_impulse_bps
+        adaptive_long_impulse_pass = impulse_bps >= adaptive_min_impulse_bps
+        adaptive_short_impulse_pass = self._config.allow_short and impulse_bps <= -adaptive_min_impulse_bps
         metrics["long_impulse_pass"] = str(long_impulse_pass).lower()
         metrics["short_impulse_pass"] = str(short_impulse_pass).lower()
-        if not long_impulse_pass and not short_impulse_pass:
+        metrics["adaptive_long_impulse_pass"] = str(adaptive_long_impulse_pass).lower()
+        metrics["adaptive_short_impulse_pass"] = str(adaptive_short_impulse_pass).lower()
+        if not adaptive_long_impulse_pass and not adaptive_short_impulse_pass:
             return None, "impulse_too_small", metrics
+
+        strict_long_ready = strict_spread_pass and long_imbalance_pass and long_impulse_pass
+        strict_short_ready = strict_spread_pass and short_imbalance_pass and short_impulse_pass
+        adaptive_long_ready = adaptive_spread_pass and adaptive_long_imbalance_pass and adaptive_long_impulse_pass
+        adaptive_short_ready = (
+            adaptive_spread_pass and adaptive_short_imbalance_pass and adaptive_short_impulse_pass
+        )
 
         signal_side = Side.BUY
         directional_impulse_bps = impulse_bps
-        if short_imbalance_pass and short_impulse_pass:
+        entry_profile = "strict"
+        if strict_short_ready:
             signal_side = Side.SELL
             directional_impulse_bps = -impulse_bps
-        elif not (long_imbalance_pass and long_impulse_pass):
+        elif strict_long_ready:
+            signal_side = Side.BUY
+        elif adaptive_short_ready:
+            signal_side = Side.SELL
+            directional_impulse_bps = -impulse_bps
+            entry_profile = "adaptive"
+        elif adaptive_long_ready:
+            signal_side = Side.BUY
+            entry_profile = "adaptive"
+        else:
             return None, "direction_not_confirmed", metrics
 
+        effective_take_profit_bps = (
+            self._config.take_profit_bps if entry_profile == "strict" else adaptive_take_profit_bps
+        )
+        effective_stop_loss_bps = (
+            self._config.stop_loss_bps if entry_profile == "strict" else adaptive_stop_loss_bps
+        )
+        effective_time_stop_seconds = (
+            self._config.time_stop_seconds if entry_profile == "strict" else adaptive_time_stop_seconds
+        )
+        effective_min_expected_edge_bps = (
+            self._config.min_expected_edge_bps
+            if entry_profile == "strict"
+            else adaptive_min_expected_edge_bps
+        )
         metrics["signal_side"] = signal_side.value
-        expected_edge_bps = min(self._config.take_profit_bps, directional_impulse_bps * Decimal("1.5"))
+        metrics["entry_profile"] = entry_profile
+        imbalance_pressure_bps = abs(snapshot.imbalance - Decimal("0.5")) * Decimal("20")
+        metrics["imbalance_pressure_bps"] = imbalance_pressure_bps
+        expected_edge_bps = min(
+            effective_take_profit_bps,
+            directional_impulse_bps * (
+                Decimal("1.5") if entry_profile == "strict" else adaptive_edge_multiplier
+            )
+            + (Decimal("0") if entry_profile == "strict" else imbalance_pressure_bps),
+        )
         metrics["expected_edge_bps"] = expected_edge_bps
-        if expected_edge_bps < self._config.min_expected_edge_bps:
+        if expected_edge_bps < effective_min_expected_edge_bps:
             return None, "expected_edge_too_low", metrics
 
-        net_take_profit_bps = self._config.take_profit_bps - self._commission_model.roundtrip_bps
+        net_take_profit_bps = effective_take_profit_bps - self._commission_model.roundtrip_bps
         metrics["net_take_profit_bps"] = net_take_profit_bps
         if net_take_profit_bps < self._config.min_net_take_profit_bps:
             return None, "net_take_profit_too_low", metrics
@@ -124,15 +207,15 @@ class ModerateScalpingStrategy:
             return None, overlay_reason, metrics
 
         reason = (
-            f"side={signal_side.value} impulse_bps={impulse_bps:.2f} spread_bps={snapshot.spread_bps:.2f} "
+            f"profile={entry_profile} side={signal_side.value} impulse_bps={impulse_bps:.2f} spread_bps={snapshot.spread_bps:.2f} "
             f"imbalance={snapshot.imbalance:.3f} net_tp_bps={net_take_profit_bps:.2f}"
         )
         return EntrySignal(
             side=signal_side,
             expected_edge_bps=expected_edge_bps,
-            take_profit_bps=self._config.take_profit_bps,
-            stop_loss_bps=self._config.stop_loss_bps,
-            time_stop_seconds=self._config.time_stop_seconds,
+            take_profit_bps=effective_take_profit_bps,
+            stop_loss_bps=effective_stop_loss_bps,
+            time_stop_seconds=effective_time_stop_seconds,
             reason=reason,
         ), "ok", metrics
 
