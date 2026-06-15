@@ -253,6 +253,13 @@ def build_next_action(
         return "restart_paper_service"
     if post_change_guard.get("active"):
         return "collect_post_change_sample"
+    tuning_reasons = {str(item) for item in list(tuning.get("reasons") or [])}
+    restrictions_reasons = {str(item) for item in list(restrictions.get("reasons") or [])}
+    if not apply:
+        if "entry_window_open" in tuning_reasons or "entry_window_open" in restrictions_reasons:
+            return "retry_outside_entry_window"
+        if "open_positions_present" in tuning_reasons or "open_positions_present" in restrictions_reasons:
+            return "wait_for_positions_to_close"
     if not apply and (tuning_ready or restrictions_ready):
         return "governance_candidate_ready"
     tuning_next = str(tuning.get("next_action") or "no_change")
