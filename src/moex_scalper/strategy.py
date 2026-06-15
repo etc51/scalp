@@ -103,7 +103,10 @@ class ModerateScalpingStrategy:
         if net_take_profit_bps < self._config.min_net_take_profit_bps:
             return None, "net_take_profit_too_low", metrics
 
-        regime_allowed, regime_reason, regime_metrics = self._check_regime_filter(state)
+        regime_allowed, regime_reason, regime_metrics = self._check_regime_filter(
+            state,
+            signal_side=signal_side,
+        )
         metrics.update(regime_metrics)
         if not regime_allowed:
             return None, regime_reason, metrics
@@ -172,9 +175,12 @@ class ModerateScalpingStrategy:
     def _check_regime_filter(
         self,
         state: InstrumentMomentumState,
+        *,
+        signal_side: Side,
     ) -> tuple[bool, str, dict[str, Decimal | str]]:
         metrics: dict[str, Decimal | str] = {
             "regime_filter_mode": self._config.regime_filter_mode,
+            "regime_signal_side": signal_side.value,
         }
         mode = self._config.regime_filter_mode
         if mode == "off":
@@ -200,6 +206,15 @@ class ModerateScalpingStrategy:
         if mode == "trend_not_bearish":
             if trend_label == "bearish":
                 return False, "regime_prev_minute_bearish", metrics
+            return True, "ok", metrics
+
+        if mode == "trend_side_aware":
+            if signal_side is Side.BUY:
+                if trend_label != "bullish":
+                    return False, "regime_prev_minute_not_bullish", metrics
+                return True, "ok", metrics
+            if trend_label != "bearish":
+                return False, "regime_prev_minute_not_bearish_short", metrics
             return True, "ok", metrics
 
         if mode == "trend_bullish":

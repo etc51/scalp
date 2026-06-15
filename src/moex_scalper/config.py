@@ -163,6 +163,7 @@ def parse_regime_filter_mode(value: str | None, default: str = "off") -> str:
     allowed = {
         "off",
         "trend_not_bearish",
+        "trend_side_aware",
         "trend_bullish",
         "macd_positive",
         "rsi_50_70",
