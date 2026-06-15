@@ -219,6 +219,8 @@ def build_decision(*, apply: bool, applied: bool, reasons: list[str]) -> str:
 def build_next_action(*, apply: bool, applied: bool, reasons: list[str]) -> str:
     if applied:
         return "restart_paper_service"
+    if "analysis_no_entry_window_data" in reasons:
+        return "collect_in_window_market_data"
     if "insufficient_trade_sample" in reasons:
         return "collect_more_paper_trades"
     if "open_positions_present" in reasons:

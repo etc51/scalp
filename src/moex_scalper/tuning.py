@@ -385,6 +385,11 @@ def build_decision(*, apply: bool, applied: bool, reasons: list[str]) -> str:
 def build_next_action(*, apply: bool, applied: bool, reasons: list[str]) -> str:
     if applied:
         return "restart_paper_service"
+    if any(
+        reason in {"analysis_no_entry_window_data", "optimizer_no_entry_window_data", "research_no_entry_window_data"}
+        for reason in reasons
+    ):
+        return "collect_in_window_market_data"
     if "insufficient_trade_sample" in reasons:
         return "collect_more_paper_trades"
     if any(reason.startswith("research_") for reason in reasons):

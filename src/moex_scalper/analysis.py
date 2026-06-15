@@ -110,6 +110,7 @@ def analyze_trades(
             "trade_file": str(trades_path),
             "raw_trade_count": len(selected),
             "trade_count": 0,
+            "assessment": "no_entry_window_data",
             "window": {
                 "start_date": start_date.isoformat(),
                 "end_date": resolved_end_date.isoformat(),
