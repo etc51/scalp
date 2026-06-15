@@ -691,16 +691,16 @@ def build_next_action(*, apply: bool, applied: bool, reasons: list[str]) -> str:
         return "collect_in_window_market_data"
     if "insufficient_trade_sample" in reasons:
         return "collect_more_paper_trades"
+    if "open_positions_present" in reasons:
+        return "wait_for_positions_to_close"
+    if "entry_window_open" in reasons:
+        return "retry_outside_entry_window"
     if any(reason.startswith("strategy_lab_") or reason.startswith("strategy_overlay_") for reason in reasons):
         return "wait_for_better_strategy_overlay_candidate"
     if any(reason.startswith("research_") for reason in reasons):
         return "wait_for_better_regime_candidate"
     if any(reason.startswith("optimizer_") for reason in reasons):
         return "wait_for_better_optimizer_candidate"
-    if "open_positions_present" in reasons:
-        return "wait_for_positions_to_close"
-    if "entry_window_open" in reasons:
-        return "retry_outside_entry_window"
     if not apply and not reasons:
         return "candidate_ready_for_apply"
     return "no_change"
