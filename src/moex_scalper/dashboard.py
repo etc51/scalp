@@ -557,6 +557,7 @@ HTML = """<!doctype html>
           ["Applied", restrictions ? String(restrictions.applied) : "—"],
           ["Decision", restrictions?.decision || "—"],
           ["Next Action", restrictions?.next_action || "—"],
+          ["Candidate Source", restrictions?.candidate_source || "—"],
           ["Reasons", (restrictions?.reasons || []).join(", ") || "—"],
           ["Active Tickers", activeTickers.join(", ") || "—"],
           ["Active Hours", activeHours.map((hour) => `${hour}:00`).join(", ") || "—"],
@@ -565,6 +566,8 @@ HTML = """<!doctype html>
           ["Clears Existing", restrictions ? String(restrictions.clears_existing_restrictions) : "—"],
           ["Analysis Trades", fmtNum(restrictions?.analysis?.trade_count || 0, 0)],
           ["Analysis Assessment", restrictions?.analysis?.assessment || "—"],
+          ["Optimizer Status", restrictions?.optimizer?.status || "—"],
+          ["Coverage Max Ready", restrictions?.coverage_fallback?.max_ready_rate_pct || "—"],
           ["Updated", restrictions?.generated_at || active.updated_at || "—"],
         ],
       );

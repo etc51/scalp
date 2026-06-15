@@ -471,6 +471,7 @@ python3 -m moex_scalper restrict --apply --write-report
 - не меняет ограничения во время окна новых входов
 - не меняет ограничения, если есть открытые позиции в `paper_session.json`
 - может как добавить новые ограничения, так и снять старые, если свежий анализ больше не подтверждает слабые buckets
+- если trade sample еще мал, может безопасно fallback-нуться к `optimizer.signal_coverage` и предложить ограничения по тикерам/часам с почти нулевым ready-rate и доминирующим микроструктурным blocker
 - пишет решение в `runtime/restrictions/latest.json`
 - сохраняет активные ограничения в `runtime/restrictions/active.json`
 - после успешного apply перезапускает только `paper`-сервис бота
@@ -485,6 +486,7 @@ python3 -m moex_scalper restrict --apply --write-report
 
 - это влияет только на новые входы
 - уже открытые `paper`-позиции не закрываются и не пересчитываются из-за смены ограничений
+- coverage-fallback по умолчанию очень консервативен и требует большой in-window sample по market-data, низкий signal-ready rate и высокий share одного доминирующего blocker
 
 ## Runtime Watchdog
 
