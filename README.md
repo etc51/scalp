@@ -193,6 +193,13 @@ Version-controlled paper risk profile:
 - `.env` still stores token, account and machine-local settings
 - on startup the bot loads `.env` first and then applies the tracked paper profile, so nightly GitHub auto-updates can change budget/leverage without touching secrets
 
+Version-controlled strategy profile:
+
+- tracked file `config/strategy_profile.env` now overlays a safe subset of strategy and paper-risk keys after `.env`
+- current first use is deliberate downside control: `SCALPER_MAX_SPREAD_BPS=1.5` is now tracked from GitHub because the corrected paper replay shows wide-spread entries remain a fee drag
+- intraday guard settings can also live there, so server updates no longer require manual `.env` edits for routine paper strategy tweaks
+- pre-existing real environment variables still win, so an explicit server-side override can temporarily bypass the tracked profile if needed
+
 Осторожный live-запуск:
 
 ```bash

@@ -18,6 +18,28 @@ TRACKED_PAPER_PROFILE_KEYS = frozenset(
         "SCALPER_PAPER_MAX_GROSS_LEVERAGE",
     }
 )
+TRACKED_STRATEGY_PROFILE_PATH = Path("config") / "strategy_profile.env"
+TRACKED_STRATEGY_PROFILE_KEYS = frozenset(
+    {
+        "SCALPER_MAX_SPREAD_BPS",
+        "SCALPER_MIN_IMBALANCE",
+        "SCALPER_MIN_IMPULSE_BPS",
+        "SCALPER_TAKE_PROFIT_BPS",
+        "SCALPER_STOP_LOSS_BPS",
+        "SCALPER_TIME_STOP_SECONDS",
+        "SCALPER_MIN_EXPECTED_EDGE_BPS",
+        "SCALPER_MIN_NET_TAKE_PROFIT_BPS",
+        "SCALPER_TARGET_NET_TAKE_PROFIT_BUFFER_BPS",
+        "SCALPER_COOLDOWN_SECONDS",
+        "SCALPER_REGIME_FILTER_MODE",
+        "SCALPER_INTRADAY_TICKER_LOSS_LIMIT_RUB",
+        "SCALPER_INTRADAY_TICKER_MAX_CONSECUTIVE_LOSSES",
+        "SCALPER_MAX_OPEN_POSITIONS",
+        "SCALPER_MAX_POSITION_NOTIONAL_RUB",
+        "SCALPER_POSITION_SIZING_MODE",
+        "SCALPER_ORDER_QUANTITY_LOTS",
+    }
+)
 
 
 def load_dotenv(
@@ -48,15 +70,22 @@ def load_dotenv(
 
 def load_project_env(
     dotenv_path: Path = Path(".env"),
-    tracked_profile_path: Path = TRACKED_PAPER_PROFILE_PATH,
+    tracked_paper_profile_path: Path = TRACKED_PAPER_PROFILE_PATH,
+    tracked_strategy_profile_path: Path = TRACKED_STRATEGY_PROFILE_PATH,
 ) -> None:
     protected_keys = set(os.environ)
     load_dotenv(dotenv_path)
     load_dotenv(
-        tracked_profile_path,
+        tracked_paper_profile_path,
         override=True,
         protected_keys=protected_keys,
         allowed_keys=TRACKED_PAPER_PROFILE_KEYS,
+    )
+    load_dotenv(
+        tracked_strategy_profile_path,
+        override=True,
+        protected_keys=protected_keys,
+        allowed_keys=TRACKED_STRATEGY_PROFILE_KEYS,
     )
 
 
