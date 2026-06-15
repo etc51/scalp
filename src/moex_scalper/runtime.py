@@ -299,8 +299,15 @@ class ScalperRuntime:
             metadata={
                 "mode": self.config.mode,
                 "entry_profile": signal.profile,
+                "entry_tier": str(metrics.get("entry_tier", signal.profile)),
                 "entry_expected_edge_bps": str(signal.expected_edge_bps),
+                "entry_expected_edge_after_costs_bps": str(
+                    metrics.get("expected_edge_after_costs_bps", "")
+                ),
                 "entry_impulse_bps": str(metrics.get("impulse_bps", "")),
+                "entry_impulse_spread_ratio": str(
+                    metrics.get("adaptive_impulse_spread_ratio", "")
+                ),
                 "entry_imbalance": str(snapshot.imbalance),
                 "entry_spread_bps": str(snapshot.spread_bps),
             },

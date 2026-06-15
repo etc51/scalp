@@ -21,6 +21,11 @@ ADAPTIVE_MIN_EXPECTED_EDGE_BPS = Decimal("6")
 ADAPTIVE_LATE_SESSION_MIN_EXPECTED_EDGE_BPS = Decimal("8")
 ADAPTIVE_COST_HEADROOM_FLOOR_BPS = Decimal("4")
 ADAPTIVE_EDGE_MULTIPLIER = Decimal("2.5")
+ADAPTIVE_EXPECTED_EDGE_AFTER_COSTS_FLOOR_BPS = Decimal("2.0")
+ADAPTIVE_STRONG_EXPECTED_EDGE_AFTER_COSTS_BPS = Decimal("4.0")
+ADAPTIVE_IMPULSE_SPREAD_RATIO_FLOOR = Decimal("1.25")
+ADAPTIVE_STRONG_IMPULSE_SPREAD_RATIO = Decimal("2.0")
+ADAPTIVE_WORKABLE_TIME_STOP_SECONDS = 14.0
 ADAPTIVE_LATE_SESSION_START_HOUR = 16
 ADAPTIVE_SCRATCH_MIN_SECONDS = 4.0
 ADAPTIVE_SCRATCH_MAX_SECONDS = 8.0
@@ -242,6 +247,8 @@ class ModerateScalpingStrategy:
         metrics["net_take_profit_bps"] = net_take_profit_bps
         if net_take_profit_bps < self._config.min_net_take_profit_bps:
             return None, "net_take_profit_too_low", metrics
+        entry_tier = "strict"
+        expected_edge_after_costs_bps: Decimal | None = None
         if entry_profile == "adaptive":
             net_take_profit_after_costs_bps = net_take_profit_bps - snapshot.spread_bps
             adaptive_cost_headroom_floor_bps = max(
@@ -252,6 +259,40 @@ class ModerateScalpingStrategy:
             metrics["adaptive_cost_headroom_floor_bps"] = adaptive_cost_headroom_floor_bps
             if net_take_profit_after_costs_bps < adaptive_cost_headroom_floor_bps:
                 return None, "adaptive_cost_headroom_too_low", metrics
+            expected_edge_after_costs_bps = (
+                expected_edge_bps - self._commission_model.roundtrip_bps - snapshot.spread_bps
+            )
+            adaptive_expected_edge_after_costs_floor_bps = max(
+                ADAPTIVE_EXPECTED_EDGE_AFTER_COSTS_FLOOR_BPS,
+                self._config.target_net_take_profit_buffer_bps,
+            )
+            adaptive_impulse_spread_ratio = (
+                directional_impulse_bps / snapshot.spread_bps
+                if snapshot.spread_bps > 0
+                else directional_impulse_bps
+            )
+            metrics["expected_edge_after_costs_bps"] = expected_edge_after_costs_bps
+            metrics["adaptive_expected_edge_after_costs_floor_bps"] = (
+                adaptive_expected_edge_after_costs_floor_bps
+            )
+            metrics["adaptive_impulse_spread_ratio"] = adaptive_impulse_spread_ratio
+            if adaptive_impulse_spread_ratio < ADAPTIVE_IMPULSE_SPREAD_RATIO_FLOOR:
+                return None, "impulse_too_small", metrics
+            if expected_edge_after_costs_bps < adaptive_expected_edge_after_costs_floor_bps:
+                return None, "expected_edge_too_low", metrics
+            if (
+                adaptive_impulse_spread_ratio >= ADAPTIVE_STRONG_IMPULSE_SPREAD_RATIO
+                and expected_edge_after_costs_bps >= ADAPTIVE_STRONG_EXPECTED_EDGE_AFTER_COSTS_BPS
+            ):
+                entry_tier = "strong"
+            else:
+                entry_tier = "workable"
+                effective_time_stop_seconds = min(
+                    effective_time_stop_seconds,
+                    ADAPTIVE_WORKABLE_TIME_STOP_SECONDS,
+                )
+        metrics["entry_tier"] = entry_tier
+        metrics["effective_time_stop_seconds"] = str(effective_time_stop_seconds)
 
         regime_allowed, regime_reason, regime_metrics = self._check_regime_filter(
             state,
@@ -276,7 +317,11 @@ class ModerateScalpingStrategy:
             f"imbalance={snapshot.imbalance:.3f} net_tp_bps={net_take_profit_bps:.2f}"
         )
         if entry_profile == "adaptive":
-            reason += f" net_tp_after_costs_bps={net_take_profit_after_costs_bps:.2f}"
+            reason += (
+                f" net_tp_after_costs_bps={net_take_profit_after_costs_bps:.2f}"
+                f" expected_edge_after_costs_bps={expected_edge_after_costs_bps:.2f}"
+                f" edge_tier={entry_tier}"
+            )
         return EntrySignal(
             side=signal_side,
             expected_edge_bps=expected_edge_bps,
