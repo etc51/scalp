@@ -1,0 +1,11 @@
+[Unit]
+Description=Nightly coordinated governance apply for MOEX scalper
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=__RUN_USER__
+Group=__RUN_GROUP__
+WorkingDirectory=__PROJECT_DIR__
+ExecStart=/usr/bin/env bash __PROJECT_DIR__/scripts/run_governor_service.sh

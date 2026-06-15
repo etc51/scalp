@@ -9,6 +9,7 @@ from .analysis import analyze_trades
 from .config import ScalperConfig, build_parser, load_config, load_project_env
 from .dashboard import serve_dashboard
 from .doctor import build_doctor_payload, write_doctor_report
+from .governance import run_governor
 from .optimizer import optimize_parameters
 from .research import build_indicator_research
 from .restrictions import build_restrictions
@@ -106,6 +107,14 @@ def main() -> int:
 
     if args.command == "restrict":
         payload = build_restrictions(
+            config,
+            apply=args.apply,
+            write_report=args.write_report,
+        )
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+    if args.command == "govern":
+        payload = run_governor(
             config,
             apply=args.apply,
             write_report=args.write_report,

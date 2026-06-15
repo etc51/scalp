@@ -280,9 +280,16 @@ HTML = """<!doctype html>
 
     <div class="layout">
       <div class="panel">
+        <h2>Nightly Governor</h2>
+        <div id="governanceWrap"></div>
+      </div>
+      <div class="panel">
         <h2>Daily Summary</h2>
         <div id="summaryWrap"></div>
       </div>
+    </div>
+
+    <div class="layout">
       <div class="panel">
         <h2>Indicator Research</h2>
         <div id="researchSummaryWrap"></div>
@@ -576,6 +583,28 @@ HTML = """<!doctype html>
       );
     };
 
+    const renderGovernance = (governance) => {
+      if (!governance) return '<div class="empty">Пока нет governance-report</div>';
+      return renderTable(
+        ["Metric", "Value"],
+        [
+          ["Decision", governance.decision || "—"],
+          ["Next Action", governance.next_action || "—"],
+          ["Apply Requested", String(governance.apply_requested)],
+          ["Applied", String(governance.applied)],
+          ["Ready Actions", (governance.ready_actions || []).join(", ") || "—"],
+          ["Applied Actions", (governance.applied_actions || []).join(", ") || "—"],
+          ["Restart Required", String(governance.service_restart_required)],
+          ["Analysis Status", governance.pipeline?.analysis_status || "—"],
+          ["Optimizer Status", governance.pipeline?.optimizer_status || "—"],
+          ["Research Status", governance.pipeline?.research_status || "—"],
+          ["Tuning Decision", governance.tuning?.result?.decision || governance.tuning?.preview?.decision || "—"],
+          ["Restrictions Decision", governance.restrictions?.result?.decision || governance.restrictions?.preview?.decision || "—"],
+          ["Updated", governance.generated_at || "—"],
+        ],
+      );
+    };
+
     const renderAnalysisSummary = (analysis) => {
       if (!analysis || !analysis.summary) return '<div class="empty">Пока нет analysis-report</div>';
       const summary = analysis.summary;
@@ -740,6 +769,7 @@ HTML = """<!doctype html>
         const doctor = state.doctor || null;
         const tuning = state.tuning || null;
         const restrictions = state.restrictions || null;
+        const governance = state.governance || null;
         const activeRestrictions = state.active_restrictions || null;
         const analysis = state.analysis || null;
         const research = state.research || null;
@@ -837,6 +867,7 @@ HTML = """<!doctype html>
         );
         document.getElementById("restrictionsWrap").innerHTML = renderRestrictions(restrictions, activeRestrictions);
         document.getElementById("tuningWrap").innerHTML = renderTuning(tuning);
+        document.getElementById("governanceWrap").innerHTML = renderGovernance(governance);
         document.getElementById("analysisSummaryWrap").innerHTML = renderAnalysisSummary(analysis);
         document.getElementById("analysisFocusWrap").innerHTML = renderFocus(analysis);
         document.getElementById("summaryWrap").innerHTML = renderDailySummary(summary);
@@ -903,6 +934,7 @@ def _default_payload() -> dict[str, object]:
         "doctor": None,
         "tuning": None,
         "restrictions": None,
+        "governance": None,
         "analysis": None,
         "research": None,
         "summary": None,
@@ -934,6 +966,7 @@ def serve_dashboard(*, host: str, port: int, runtime_dir: Path) -> None:
     doctor_path = runtime_dir / "doctor" / "latest.json"
     tuning_path = runtime_dir / "tuning" / "latest.json"
     restrictions_path = runtime_dir / "restrictions" / "latest.json"
+    governance_path = runtime_dir / "governance" / "latest.json"
     analysis_path = runtime_dir / "analysis" / "latest.json"
     research_path = runtime_dir / "research" / "latest.json"
     summary_path = runtime_dir / "summary" / "latest.json"
@@ -982,6 +1015,11 @@ def serve_dashboard(*, host: str, port: int, runtime_dir: Path) -> None:
                         payload["restrictions"] = json.loads(restrictions_path.read_text(encoding="utf-8"))
                     except json.JSONDecodeError:
                         payload["restrictions"] = None
+                if governance_path.exists():
+                    try:
+                        payload["governance"] = json.loads(governance_path.read_text(encoding="utf-8"))
+                    except json.JSONDecodeError:
+                        payload["governance"] = None
                 if analysis_path.exists():
                     try:
                         payload["analysis"] = json.loads(analysis_path.read_text(encoding="utf-8"))

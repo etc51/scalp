@@ -458,9 +458,36 @@ python3 -m moex_scalper tune --apply --write-report
 
 - ручной запуск: `sudo systemctl start moex-scalper-tune.service`
 - автоматический таймер: `moex-scalper-tune.timer`
-- по умолчанию таймер срабатывает в `18:24 MSK` по `понедельник-пятница`, уже после nightly research
+- timer unit сохранен для ручного включения, но штатный nightly apply теперь делает `moex-scalper-govern.timer`
 
 Это влияет только на новые входы после рестарта. Уже сохраненные открытые `paper`-позиции продолжают жить со своими параметрами, записанными в session-state.
+
+## Nightly Governor
+
+Теперь для nightly apply есть единый coordinator:
+
+```bash
+python3 -m moex_scalper govern --apply --write-report
+```
+
+Что делает:
+
+- обновляет свежие `analysis`, `optimizer` и `research`
+- строит preview для `tune` и `restrict`
+- если оба кандидата готовы, применяет их в одном проходе
+- пишет единый отчет в `runtime/governance/latest.json`
+- требует только один рестарт `paper`-сервиса даже если применились и параметры стратегии, и entry-restrictions
+
+На сервере это можно запускать и вручную, и автоматически:
+
+- ручной запуск: `sudo systemctl start moex-scalper-govern.service`
+- автоматический таймер: `moex-scalper-govern.timer`
+- по умолчанию таймер срабатывает в `18:24 MSK` по `понедельник-пятница`
+
+Важно:
+
+- `moex-scalper-tune.service` и `moex-scalper-restrict.service` остаются для ручного запуска и отладки
+- installer теперь включает nightly `govern` timer и отключает отдельные nightly timers для `tune` и `restrict`, чтобы убрать двойные рестарты
 
 ## Entry Restrictions
 
@@ -489,7 +516,7 @@ python3 -m moex_scalper restrict --apply --write-report
 
 - ручной запуск: `sudo systemctl start moex-scalper-restrict.service`
 - автоматический таймер: `moex-scalper-restrict.timer`
-- по умолчанию таймер срабатывает в `18:18 MSK` по `понедельник-пятница`
+- timer unit сохранен для ручного включения, но штатный nightly apply теперь делает `moex-scalper-govern.timer`
 
 Важно:
 

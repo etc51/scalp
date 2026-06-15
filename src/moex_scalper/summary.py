@@ -22,6 +22,7 @@ def build_daily_summary(
     doctor = _load_json(runtime_dir / "doctor" / "latest.json")
     tuning = _load_json(runtime_dir / "tuning" / "latest.json")
     restrictions = _load_json(runtime_dir / "restrictions" / "latest.json")
+    governance = _load_json(runtime_dir / "governance" / "latest.json")
     watchdog = _load_json(runtime_dir / "watchdog" / "latest.json")
 
     today_stats = ((state or {}).get("stats") or {}).get("today") or {}
@@ -99,6 +100,14 @@ def build_daily_summary(
             "next_action": (restrictions or {}).get("next_action"),
             "reasons": list((restrictions or {}).get("reasons") or []),
         },
+        "governance": {
+            "decision": (governance or {}).get("decision"),
+            "next_action": (governance or {}).get("next_action"),
+            "applied": (governance or {}).get("applied"),
+            "applied_actions": list((governance or {}).get("applied_actions") or []),
+            "ready_actions": list((governance or {}).get("ready_actions") or []),
+            "service_restart_required": (governance or {}).get("service_restart_required"),
+        },
         "watchdog": {
             "status": (watchdog or {}).get("status"),
             "restart_required": (watchdog or {}).get("restart_required"),
@@ -122,6 +131,7 @@ def build_focus(payload: dict[str, Any]) -> list[str]:
     optimizer = payload.get("optimizer") or {}
     research = payload.get("research") or {}
     doctor = payload.get("doctor") or {}
+    governance = payload.get("governance") or {}
     watchdog = payload.get("watchdog") or {}
     strategy_diagnostics = payload.get("strategy_diagnostics") or {}
 
@@ -129,6 +139,12 @@ def build_focus(payload: dict[str, Any]) -> list[str]:
         focus.append(f"Watchdog status: {watchdog.get('status')}.")
     if doctor.get("status") == "error":
         focus.append("Doctor не смог подтвердить готовность API или watchlist перед сессией.")
+    if governance.get("applied"):
+        focus.append(
+            "Nightly governor применил: "
+            + ", ".join(str(item) for item in governance.get("applied_actions") or [])
+            + "."
+        )
     if not strategy_diagnostics.get("viable_for_entry", True):
         warnings = set(str(item) for item in strategy_diagnostics.get("warnings") or [])
         if "min_expected_edge_above_take_profit" in warnings:
@@ -180,6 +196,7 @@ def build_headline(payload: dict[str, Any]) -> str:
     optimizer = payload.get("optimizer") or {}
     research = payload.get("research") or {}
     doctor = payload.get("doctor") or {}
+    governance = payload.get("governance") or {}
     watchdog = payload.get("watchdog") or {}
     strategy_diagnostics = payload.get("strategy_diagnostics") or {}
 
@@ -187,6 +204,8 @@ def build_headline(payload: dict[str, Any]) -> str:
         return f"Watchdog status {watchdog.get('status')}: контур требует внимания."
     if doctor.get("status") == "error":
         return "Doctor не подтвердил готовность API или watchlist; перед сессией нужен ручной разбор."
+    if governance.get("applied"):
+        return "Nightly governor применил изменения и ожидает один рестарт paper-сервиса."
     if not strategy_diagnostics.get("viable_for_entry", True):
         warnings = set(str(item) for item in strategy_diagnostics.get("warnings") or [])
         if "min_expected_edge_above_take_profit" in warnings:
@@ -215,6 +234,7 @@ def build_next_action(payload: dict[str, Any]) -> str:
     doctor = payload.get("doctor") or {}
     tuning = payload.get("tuning") or {}
     restrictions = payload.get("restrictions") or {}
+    governance = payload.get("governance") or {}
     watchdog = payload.get("watchdog") or {}
     strategy_diagnostics = payload.get("strategy_diagnostics") or {}
 
@@ -222,6 +242,8 @@ def build_next_action(payload: dict[str, Any]) -> str:
         return "inspect_watchdog_and_runtime"
     if doctor.get("status") == "error":
         return "inspect_api_access"
+    if governance.get("next_action") not in {None, "no_change"}:
+        return str(governance.get("next_action"))
     if not strategy_diagnostics.get("viable_for_entry", True):
         return resolve_strategy_config_next_action(strategy_diagnostics)
     if not strategy_diagnostics.get("target_headroom_met", True):

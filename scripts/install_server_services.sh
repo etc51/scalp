@@ -34,6 +34,8 @@ render_unit "deploy/systemd/moex-scalper-summary.service" "$TMP_DIR/moex-scalper
 render_unit "deploy/systemd/moex-scalper-summary.timer" "$TMP_DIR/moex-scalper-summary.timer"
 render_unit "deploy/systemd/moex-scalper-optimize.service" "$TMP_DIR/moex-scalper-optimize.service"
 render_unit "deploy/systemd/moex-scalper-optimize.timer" "$TMP_DIR/moex-scalper-optimize.timer"
+render_unit "deploy/systemd/moex-scalper-govern.service" "$TMP_DIR/moex-scalper-govern.service"
+render_unit "deploy/systemd/moex-scalper-govern.timer" "$TMP_DIR/moex-scalper-govern.timer"
 render_unit "deploy/systemd/moex-scalper-tune.service" "$TMP_DIR/moex-scalper-tune.service"
 render_unit "deploy/systemd/moex-scalper-tune.timer" "$TMP_DIR/moex-scalper-tune.timer"
 render_unit "deploy/systemd/moex-scalper-restrict.service" "$TMP_DIR/moex-scalper-restrict.service"
@@ -55,6 +57,8 @@ sudo cp "$TMP_DIR/moex-scalper-summary.service" "$SYSTEMD_DIR/moex-scalper-summa
 sudo cp "$TMP_DIR/moex-scalper-summary.timer" "$SYSTEMD_DIR/moex-scalper-summary.timer"
 sudo cp "$TMP_DIR/moex-scalper-optimize.service" "$SYSTEMD_DIR/moex-scalper-optimize.service"
 sudo cp "$TMP_DIR/moex-scalper-optimize.timer" "$SYSTEMD_DIR/moex-scalper-optimize.timer"
+sudo cp "$TMP_DIR/moex-scalper-govern.service" "$SYSTEMD_DIR/moex-scalper-govern.service"
+sudo cp "$TMP_DIR/moex-scalper-govern.timer" "$SYSTEMD_DIR/moex-scalper-govern.timer"
 sudo cp "$TMP_DIR/moex-scalper-tune.service" "$SYSTEMD_DIR/moex-scalper-tune.service"
 sudo cp "$TMP_DIR/moex-scalper-tune.timer" "$SYSTEMD_DIR/moex-scalper-tune.timer"
 sudo cp "$TMP_DIR/moex-scalper-restrict.service" "$SYSTEMD_DIR/moex-scalper-restrict.service"
@@ -72,8 +76,9 @@ sudo systemctl enable --now moex-scalper-analyze.timer
 sudo systemctl enable --now moex-scalper-research.timer
 sudo systemctl enable --now moex-scalper-summary.timer
 sudo systemctl enable --now moex-scalper-optimize.timer
-sudo systemctl enable --now moex-scalper-tune.timer
-sudo systemctl enable --now moex-scalper-restrict.timer
+sudo systemctl enable --now moex-scalper-govern.timer
+sudo systemctl disable --now moex-scalper-tune.timer || true
+sudo systemctl disable --now moex-scalper-restrict.timer || true
 sudo systemctl enable --now moex-scalper-watchdog.timer
 sudo systemctl enable --now moex-scalper-update.timer
 
@@ -90,6 +95,8 @@ echo "- moex-scalper-summary.service"
 echo "- moex-scalper-summary.timer"
 echo "- moex-scalper-optimize.service"
 echo "- moex-scalper-optimize.timer"
+echo "- moex-scalper-govern.service"
+echo "- moex-scalper-govern.timer"
 echo "- moex-scalper-tune.service"
 echo "- moex-scalper-tune.timer"
 echo "- moex-scalper-restrict.service"
@@ -113,6 +120,7 @@ echo "  sudo journalctl -u moex-scalper-analyze.service -f"
 echo "  sudo journalctl -u moex-scalper-research.service -f"
 echo "  sudo journalctl -u moex-scalper-summary.service -f"
 echo "  sudo journalctl -u moex-scalper-optimize.service -f"
+echo "  sudo journalctl -u moex-scalper-govern.service -f"
 echo "  sudo journalctl -u moex-scalper-tune.service -f"
 echo "  sudo journalctl -u moex-scalper-restrict.service -f"
 echo "  sudo journalctl -u moex-scalper-watchdog.service -f"
