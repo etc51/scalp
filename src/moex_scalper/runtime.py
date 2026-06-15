@@ -105,9 +105,10 @@ class ScalperRuntime:
             ",".join(str(hour) for hour in self.active_restrictions.blocked_entry_hours) or "none",
         )
         LOGGER.info(
-            "Intraday guard ticker_loss_limit=%s consecutive_losses=%s session_max_guarded_tickers=%s",
+            "Intraday guard ticker_loss_limit=%s consecutive_losses=%s consecutive_time_stop_losses=%s session_max_guarded_tickers=%s",
             self.config.intraday_ticker_loss_limit_rub,
             self.config.intraday_ticker_max_consecutive_losses,
+            self.config.intraday_ticker_max_consecutive_time_stop_losses,
             self.config.intraday_session_max_guarded_tickers,
         )
 
@@ -340,11 +341,12 @@ class ScalperRuntime:
             if ticker in prior_guarded_tickers:
                 continue
             LOGGER.warning(
-                "INTRADAY_GUARD ticker=%s reasons=%s realized=%s consecutive_losses=%s",
+                "INTRADAY_GUARD ticker=%s reasons=%s realized=%s consecutive_losses=%s consecutive_time_stop_losses=%s",
                 ticker,
                 ",".join(str(reason_name) for reason_name in list(item.get("reasons") or [])),
                 item.get("realized_pnl_rub"),
                 item.get("consecutive_losses"),
+                item.get("consecutive_time_stop_losses"),
             )
         current_session_guards = list(self.risk.active_session_guards())
         if current_session_guards and not prior_session_guards:
@@ -498,6 +500,9 @@ class ScalperRuntime:
                 ),
                 "intraday_ticker_max_consecutive_losses": (
                     self.config.intraday_ticker_max_consecutive_losses
+                ),
+                "intraday_ticker_max_consecutive_time_stop_losses": (
+                    self.config.intraday_ticker_max_consecutive_time_stop_losses
                 ),
                 "intraday_session_max_guarded_tickers": (
                     self.config.intraday_session_max_guarded_tickers

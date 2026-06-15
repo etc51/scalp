@@ -194,6 +194,11 @@ def build_focus(payload: dict[str, Any]) -> list[str]:
             for item in active_guards[:3]
         )
         focus.append(f"Intraday ticker-guard сейчас удерживает новые входы: {guard_summary}.")
+        if any(
+            "ticker_consecutive_time_stop_losses_limit" in list(item.get("reasons") or [])
+            for item in active_guards
+        ):
+            focus.append("Отдельный intraday-guard уже режет тикеры с серией убыточных time-stop выходов.")
     if active_session_guards:
         session_guard_summary = ", ".join(
             f"{item.get('reason')}({item.get('guarded_tickers')}/{item.get('max_guarded_tickers')})"

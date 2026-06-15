@@ -20,6 +20,7 @@ class RiskManager:
     cooldown_until: dict[str, datetime] = field(default_factory=dict)
     ticker_realized_pnl_rub: dict[str, Decimal] = field(default_factory=dict)
     ticker_consecutive_losses: dict[str, int] = field(default_factory=dict)
+    ticker_consecutive_time_stop_losses: dict[str, int] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.current_day = trading_day_key(datetime.now(timezone.utc), self.config.timezone)
@@ -32,6 +33,7 @@ class RiskManager:
             self.cooldown_until.clear()
             self.ticker_realized_pnl_rub.clear()
             self.ticker_consecutive_losses.clear()
+            self.ticker_consecutive_time_stop_losses.clear()
 
     def entry_allowed_at(self, now: datetime) -> tuple[bool, str]:
         local_now = now.astimezone(self.config.timezone)
@@ -102,17 +104,26 @@ class RiskManager:
         max_losses = self.config.intraday_ticker_max_consecutive_losses
         if max_losses > 0 and self.ticker_consecutive_losses.get(normalized_ticker, 0) >= max_losses:
             return "ticker_consecutive_losses_limit"
+        max_time_stop_losses = self.config.intraday_ticker_max_consecutive_time_stop_losses
+        if (
+            max_time_stop_losses > 0
+            and self.ticker_consecutive_time_stop_losses.get(normalized_ticker, 0) >= max_time_stop_losses
+        ):
+            return "ticker_consecutive_time_stop_losses_limit"
         return None
 
     def active_ticker_guards(self) -> list[dict[str, object]]:
         active_tickers = sorted(
-            set(self.ticker_realized_pnl_rub) | set(self.ticker_consecutive_losses)
+            set(self.ticker_realized_pnl_rub)
+            | set(self.ticker_consecutive_losses)
+            | set(self.ticker_consecutive_time_stop_losses)
         )
         result: list[dict[str, object]] = []
         for ticker in active_tickers:
             reasons: list[str] = []
             realized = self.ticker_realized_pnl_rub.get(ticker, Decimal("0"))
             consecutive_losses = self.ticker_consecutive_losses.get(ticker, 0)
+            consecutive_time_stop_losses = self.ticker_consecutive_time_stop_losses.get(ticker, 0)
             if self.config.intraday_ticker_loss_limit_rub > 0 and realized <= -self.config.intraday_ticker_loss_limit_rub:
                 reasons.append("ticker_intraday_loss_limit")
             if (
@@ -120,6 +131,11 @@ class RiskManager:
                 and consecutive_losses >= self.config.intraday_ticker_max_consecutive_losses
             ):
                 reasons.append("ticker_consecutive_losses_limit")
+            if (
+                self.config.intraday_ticker_max_consecutive_time_stop_losses > 0
+                and consecutive_time_stop_losses >= self.config.intraday_ticker_max_consecutive_time_stop_losses
+            ):
+                reasons.append("ticker_consecutive_time_stop_losses_limit")
             if not reasons:
                 continue
             result.append(
@@ -127,6 +143,7 @@ class RiskManager:
                     "ticker": ticker,
                     "realized_pnl_rub": str(realized),
                     "consecutive_losses": consecutive_losses,
+                    "consecutive_time_stop_losses": consecutive_time_stop_losses,
                     "reasons": reasons,
                 }
             )
@@ -155,6 +172,7 @@ class RiskManager:
     def _rebuild_ticker_state(self, trades: list[ClosedTrade]) -> None:
         self.ticker_realized_pnl_rub.clear()
         self.ticker_consecutive_losses.clear()
+        self.ticker_consecutive_time_stop_losses.clear()
         for trade in sorted(trades, key=lambda item: item.closed_at):
             self._apply_ticker_trade(trade)
 
@@ -167,3 +185,9 @@ class RiskManager:
             self.ticker_consecutive_losses[ticker] = self.ticker_consecutive_losses.get(ticker, 0) + 1
         elif trade.net_pnl_rub > 0:
             self.ticker_consecutive_losses[ticker] = 0
+        if trade.exit_reason == "time_stop" and trade.net_pnl_rub < 0:
+            self.ticker_consecutive_time_stop_losses[ticker] = (
+                self.ticker_consecutive_time_stop_losses.get(ticker, 0) + 1
+            )
+        else:
+            self.ticker_consecutive_time_stop_losses[ticker] = 0
