@@ -49,6 +49,7 @@ class PaperExecutor:
         self,
         snapshot: MarketSnapshot,
         *,
+        side: Side,
         open_positions: int,
         max_open_positions: int,
         default_quantity_lots: int,
@@ -66,69 +67,104 @@ class PaperExecutor:
             if position_sizing_mode == "equal_weight_cash":
                 target_budget = buying_power_rub / Decimal(remaining_slots)
             target_budget = min(target_budget, max_position_notional_rub)
-            quantity_lots = self._max_affordable_lots(snapshot, target_budget)
+            quantity_lots = self._max_affordable_lots(snapshot, target_budget, side=side)
 
         if quantity_lots <= 0:
             return 0, Decimal("0"), "insufficient_buying_power"
 
-        entry_notional = snapshot.buy_notional_rub * Decimal(quantity_lots)
+        entry_notional = self._entry_notional_rub(snapshot, quantity_lots, side=side)
         return quantity_lots, entry_notional, "ok"
 
-    def execute_entry_sync(self, snapshot: MarketSnapshot, quantity_lots: int) -> ExecutionReport:
+    def execute_entry_sync(
+        self,
+        snapshot: MarketSnapshot,
+        quantity_lots: int,
+        side: Side = Side.BUY,
+    ) -> ExecutionReport:
+        fill_price = snapshot.ask_price if side is Side.BUY else snapshot.bid_price
         report = self._build_report(
             snapshot,
             quantity_lots,
-            Side.BUY,
-            snapshot.ask_price,
+            side,
+            fill_price,
             moment=snapshot.at,
         )
-        total_cost = report.fill_price * Decimal(snapshot.instrument.lot_size) * Decimal(quantity_lots) + report.fee_rub
-        self.cash_rub -= total_cost
+        notional = report.fill_price * Decimal(snapshot.instrument.lot_size) * Decimal(quantity_lots)
+        if side is Side.BUY:
+            self.cash_rub -= notional + report.fee_rub
+        else:
+            self.cash_rub += notional - report.fee_rub
         report.metadata["cash_after_rub"] = str(self.cash_rub)
         return report
 
-    async def execute_entry(self, snapshot: MarketSnapshot, quantity_lots: int) -> ExecutionReport:
-        return self.execute_entry_sync(snapshot, quantity_lots)
+    async def execute_entry(
+        self,
+        snapshot: MarketSnapshot,
+        quantity_lots: int,
+        side: Side = Side.BUY,
+    ) -> ExecutionReport:
+        return self.execute_entry_sync(snapshot, quantity_lots, side)
 
-    def execute_exit_sync(self, snapshot: MarketSnapshot, quantity_lots: int) -> ExecutionReport:
+    def execute_exit_sync(
+        self,
+        snapshot: MarketSnapshot,
+        quantity_lots: int,
+        position_side: Side = Side.BUY,
+    ) -> ExecutionReport:
+        exit_side = Side.SELL if position_side is Side.BUY else Side.BUY
+        fill_price = snapshot.bid_price if position_side is Side.BUY else snapshot.ask_price
         report = self._build_report(
             snapshot,
             quantity_lots,
-            Side.SELL,
-            snapshot.bid_price,
+            exit_side,
+            fill_price,
             moment=snapshot.at,
         )
-        proceeds = report.fill_price * Decimal(snapshot.instrument.lot_size) * Decimal(quantity_lots)
-        self.cash_rub += proceeds - report.fee_rub
+        notional = report.fill_price * Decimal(snapshot.instrument.lot_size) * Decimal(quantity_lots)
+        if position_side is Side.BUY:
+            self.cash_rub += notional - report.fee_rub
+        else:
+            self.cash_rub -= notional + report.fee_rub
         report.metadata["cash_after_rub"] = str(self.cash_rub)
         return report
 
-    async def execute_exit(self, snapshot: MarketSnapshot, quantity_lots: int) -> ExecutionReport:
-        return self.execute_exit_sync(snapshot, quantity_lots)
+    async def execute_exit(
+        self,
+        snapshot: MarketSnapshot,
+        quantity_lots: int,
+        position_side: Side = Side.BUY,
+    ) -> ExecutionReport:
+        return self.execute_exit_sync(snapshot, quantity_lots, position_side)
 
     def market_value_rub(self, positions: list[Any], latest_prices: dict[str, Decimal]) -> Decimal:
         total = Decimal("0")
         for position in positions:
             price = latest_prices.get(position.instrument.instrument_id, position.entry_price)
-            total += price * Decimal(position.instrument.lot_size) * Decimal(position.quantity_lots)
+            signed_notional = price * Decimal(position.instrument.lot_size) * Decimal(position.quantity_lots)
+            if position.side is Side.SELL:
+                signed_notional *= Decimal("-1")
+            total += signed_notional
         return total
 
     def unrealized_pnl_rub(self, positions: list[Any], latest_prices: dict[str, Decimal]) -> Decimal:
         total = Decimal("0")
         for position in positions:
             price = latest_prices.get(position.instrument.instrument_id, position.entry_price)
-            total += (
-                (price - position.entry_price)
-                * Decimal(position.instrument.lot_size)
-                * Decimal(position.quantity_lots)
-            )
+            pnl_per_share = price - position.entry_price
+            if position.side is Side.SELL:
+                pnl_per_share = position.entry_price - price
+            total += pnl_per_share * Decimal(position.instrument.lot_size) * Decimal(position.quantity_lots)
         return total
 
     def equity_rub(self, positions: list[Any], latest_prices: dict[str, Decimal]) -> Decimal:
         return self.cash_rub + self.market_value_rub(positions, latest_prices)
 
     def gross_exposure_rub(self, positions: list[Any], latest_prices: dict[str, Decimal]) -> Decimal:
-        return self.market_value_rub(positions, latest_prices)
+        total = Decimal("0")
+        for position in positions:
+            price = latest_prices.get(position.instrument.instrument_id, position.entry_price)
+            total += price * Decimal(position.instrument.lot_size) * Decimal(position.quantity_lots)
+        return total
 
     def max_gross_exposure_rub(self, positions: list[Any], latest_prices: dict[str, Decimal]) -> Decimal:
         equity = self.equity_rub(positions, latest_prices)
@@ -141,14 +177,24 @@ class PaperExecutor:
         gross_exposure = self.gross_exposure_rub(positions, latest_prices)
         return max(Decimal("0"), max_exposure - gross_exposure)
 
-    def _max_affordable_lots(self, snapshot: MarketSnapshot, budget_rub: Decimal) -> int:
-        lot_notional = snapshot.buy_notional_rub
+    def _max_affordable_lots(self, snapshot: MarketSnapshot, budget_rub: Decimal, *, side: Side) -> int:
+        lot_notional = snapshot.buy_notional_rub if side is Side.BUY else snapshot.sell_notional_rub
         if lot_notional <= 0 or budget_rub <= 0:
             return 0
         total_per_lot = lot_notional + self.commission_model.fee_rub(lot_notional)
         if total_per_lot <= 0:
             return 0
         return int(budget_rub / total_per_lot)
+
+    def _entry_notional_rub(
+        self,
+        snapshot: MarketSnapshot,
+        quantity_lots: int,
+        *,
+        side: Side,
+    ) -> Decimal:
+        lot_notional = snapshot.buy_notional_rub if side is Side.BUY else snapshot.sell_notional_rub
+        return lot_notional * Decimal(quantity_lots)
 
     def _build_report(
         self,
@@ -184,11 +230,22 @@ class LiveExecutor:
     commission_model: CommissionModel
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
-    async def execute_entry(self, snapshot: MarketSnapshot, quantity_lots: int) -> ExecutionReport:
-        return await self._execute_market(snapshot, quantity_lots, Side.BUY)
+    async def execute_entry(
+        self,
+        snapshot: MarketSnapshot,
+        quantity_lots: int,
+        side: Side = Side.BUY,
+    ) -> ExecutionReport:
+        return await self._execute_market(snapshot, quantity_lots, side)
 
-    async def execute_exit(self, snapshot: MarketSnapshot, quantity_lots: int) -> ExecutionReport:
-        return await self._execute_market(snapshot, quantity_lots, Side.SELL)
+    async def execute_exit(
+        self,
+        snapshot: MarketSnapshot,
+        quantity_lots: int,
+        position_side: Side = Side.BUY,
+    ) -> ExecutionReport:
+        exit_side = Side.SELL if position_side is Side.BUY else Side.BUY
+        return await self._execute_market(snapshot, quantity_lots, exit_side)
 
     async def _execute_market(
         self,

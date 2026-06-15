@@ -506,6 +506,8 @@ HTML = """<!doctype html>
           ["Max Spread", parameters.max_spread_bps ?? "—"],
           ["Min Imbalance", parameters.min_imbalance ?? "—"],
           ["Min Impulse", parameters.min_impulse_bps ?? "—"],
+          ["Entry Modes", diagnostics?.entry_modes ?? "—"],
+          ["Short Enabled", diagnostics?.allow_short === undefined ? "—" : String(diagnostics.allow_short)],
           ["Take Profit", parameters.take_profit_bps ?? "—"],
           ["Stop Loss", parameters.stop_loss_bps ?? "—"],
           ["Time Stop", parameters.time_stop_seconds ?? "—"],
@@ -828,21 +830,23 @@ HTML = """<!doctype html>
           `watchlist: ${(state.watchlist || []).join(", ")} | schedule: ${state.entry_schedule?.start || "—"}-${state.entry_schedule?.end || "—"} ${state.entry_schedule?.timezone || ""} | updated: ${state.updated_at || "—"} | processed: ${state.snapshots_processed || 0} | in-window today: ${marketHistory.recorded_snapshots_today || 0} | recorded total: ${marketHistory.recorded_snapshots_total || 0} | signals: ${state.signals_detected || 0}`;
 
         document.getElementById("positionsWrap").innerHTML = renderTable(
-          ["Ticker", "Qty", "Entry", "Current Bid", "Entry Fee", "Opened"],
+          ["Ticker", "Side", "Qty", "Entry", "Mark", "Entry Fee", "Opened"],
           (state.positions || []).map((item) => [
             item.ticker,
+            item.side || "—",
             fmtNum(item.quantity_lots, 0),
             fmtNum(item.entry_price, 4),
-            fmtNum(item.current_bid, 4),
+            fmtNum(item.current_mark, 4),
             fmtRub(item.entry_fee_rub),
             item.opened_at,
           ]),
         );
 
         document.getElementById("tradesWrap").innerHTML = renderTable(
-          ["Ticker", "Qty", "Entry", "Exit", "Fees", "Net PnL", "Exit Reason"],
+          ["Ticker", "Side", "Qty", "Entry", "Exit", "Fees", "Net PnL", "Exit Reason"],
           (state.trades_today || []).slice().reverse().map((item) => [
             item.ticker,
+            item.side || "—",
             fmtNum(item.quantity_lots, 0),
             fmtNum(item.entry_price, 4),
             fmtNum(item.exit_price, 4),

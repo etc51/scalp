@@ -66,12 +66,34 @@ class ModerateScalpingStrategy:
         }
         if snapshot.spread_bps > self._config.max_spread_bps:
             return None, "spread_too_wide", metrics
-        if snapshot.imbalance < self._config.min_imbalance:
+
+        long_imbalance_pass = snapshot.imbalance >= self._config.min_imbalance
+        short_imbalance_pass = (
+            self._config.allow_short
+            and snapshot.imbalance <= (Decimal("1") - self._config.min_imbalance)
+        )
+        metrics["long_imbalance_pass"] = str(long_imbalance_pass).lower()
+        metrics["short_imbalance_pass"] = str(short_imbalance_pass).lower()
+        if not long_imbalance_pass and not short_imbalance_pass:
             return None, "imbalance_too_low", metrics
-        if impulse_bps < self._config.min_impulse_bps:
+
+        long_impulse_pass = impulse_bps >= self._config.min_impulse_bps
+        short_impulse_pass = self._config.allow_short and impulse_bps <= -self._config.min_impulse_bps
+        metrics["long_impulse_pass"] = str(long_impulse_pass).lower()
+        metrics["short_impulse_pass"] = str(short_impulse_pass).lower()
+        if not long_impulse_pass and not short_impulse_pass:
             return None, "impulse_too_small", metrics
 
-        expected_edge_bps = min(self._config.take_profit_bps, impulse_bps * Decimal("1.5"))
+        signal_side = Side.BUY
+        directional_impulse_bps = impulse_bps
+        if short_imbalance_pass and short_impulse_pass:
+            signal_side = Side.SELL
+            directional_impulse_bps = -impulse_bps
+        elif not (long_imbalance_pass and long_impulse_pass):
+            return None, "direction_not_confirmed", metrics
+
+        metrics["signal_side"] = signal_side.value
+        expected_edge_bps = min(self._config.take_profit_bps, directional_impulse_bps * Decimal("1.5"))
         metrics["expected_edge_bps"] = expected_edge_bps
         if expected_edge_bps < self._config.min_expected_edge_bps:
             return None, "expected_edge_too_low", metrics
@@ -87,11 +109,11 @@ class ModerateScalpingStrategy:
             return None, regime_reason, metrics
 
         reason = (
-            f"impulse_bps={impulse_bps:.2f} spread_bps={snapshot.spread_bps:.2f} "
+            f"side={signal_side.value} impulse_bps={impulse_bps:.2f} spread_bps={snapshot.spread_bps:.2f} "
             f"imbalance={snapshot.imbalance:.3f} net_tp_bps={net_take_profit_bps:.2f}"
         )
         return EntrySignal(
-            side=Side.BUY,
+            side=signal_side,
             expected_edge_bps=expected_edge_bps,
             take_profit_bps=self._config.take_profit_bps,
             stop_loss_bps=self._config.stop_loss_bps,
@@ -100,23 +122,32 @@ class ModerateScalpingStrategy:
         ), "ok", metrics
 
     def evaluate_exit(self, position: Position, snapshot: MarketSnapshot) -> ExitDecision | None:
-        if position.side is not Side.BUY:
-            return None
-
-        if snapshot.bid_price <= 0:
-            return None
-
-        target_price = position.entry_price * (
-            Decimal("1") + position.take_profit_bps / Decimal("10000")
-        )
-        stop_price = position.entry_price * (
-            Decimal("1") - position.stop_loss_bps / Decimal("10000")
-        )
-
-        if snapshot.bid_price >= target_price:
-            return ExitDecision(reason="take_profit")
-        if snapshot.bid_price <= stop_price:
-            return ExitDecision(reason="stop_loss")
+        if position.side is Side.BUY:
+            if snapshot.bid_price <= 0:
+                return None
+            target_price = position.entry_price * (
+                Decimal("1") + position.take_profit_bps / Decimal("10000")
+            )
+            stop_price = position.entry_price * (
+                Decimal("1") - position.stop_loss_bps / Decimal("10000")
+            )
+            if snapshot.bid_price >= target_price:
+                return ExitDecision(reason="take_profit")
+            if snapshot.bid_price <= stop_price:
+                return ExitDecision(reason="stop_loss")
+        else:
+            if snapshot.ask_price <= 0:
+                return None
+            target_price = position.entry_price * (
+                Decimal("1") - position.take_profit_bps / Decimal("10000")
+            )
+            stop_price = position.entry_price * (
+                Decimal("1") + position.stop_loss_bps / Decimal("10000")
+            )
+            if snapshot.ask_price <= target_price:
+                return ExitDecision(reason="take_profit")
+            if snapshot.ask_price >= stop_price:
+                return ExitDecision(reason="stop_loss")
         if (snapshot.at - position.opened_at).total_seconds() >= position.time_stop_seconds:
             return ExitDecision(reason="time_stop")
         return None

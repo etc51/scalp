@@ -92,6 +92,8 @@ def build_strategy_diagnostics(config: ScalperConfig) -> dict[str, Any]:
         warnings.append("net_take_profit_below_target_buffer")
 
     return {
+        "allow_short": config.allow_short,
+        "entry_modes": "long+short" if config.allow_short else "long_only",
         "regime_filter_mode": config.regime_filter_mode,
         "premium_roundtrip_commission_bps": str(roundtrip_commission_bps),
         "configured_take_profit_bps": str(config.take_profit_bps),

@@ -282,8 +282,20 @@ def _update_coverage_bucket(
     bucket["sum_impulse_bps"] += impulse_bps
 
     spread_pass = spread_bps <= config.max_spread_bps
-    imbalance_pass = spread_pass and imbalance >= config.min_imbalance
-    impulse_pass = imbalance_pass and impulse_bps >= config.min_impulse_bps
+    imbalance_pass = spread_pass and (
+        imbalance >= config.min_imbalance
+        or (
+            config.allow_short
+            and imbalance <= (Decimal("1") - config.min_imbalance)
+        )
+    )
+    impulse_pass = imbalance_pass and (
+        impulse_bps >= config.min_impulse_bps
+        or (
+            config.allow_short
+            and impulse_bps <= -config.min_impulse_bps
+        )
+    )
     expected_edge_pass = signal is not None or (
         impulse_pass
         and expected_edge_bps is not None
@@ -467,7 +479,7 @@ def simulate_candidate(
     positions: dict[str, Position] = {}
     trades: list[ClosedTrade] = []
     blocked: Counter[str] = Counter()
-    latest_bid_by_instrument: dict[str, Decimal] = {}
+    latest_mark_by_instrument: dict[str, Decimal] = {}
     signals_detected = 0
     filtered_signal_count = 0
     peak_equity = executor.initial_cash_rub
@@ -475,14 +487,21 @@ def simulate_candidate(
     equity_curve: list[Decimal] = []
 
     for snapshot in snapshots:
-        latest_bid_by_instrument[snapshot.instrument.instrument_id] = snapshot.bid_price
         position = positions.get(snapshot.instrument.instrument_id)
+        latest_mark_by_instrument[snapshot.instrument.instrument_id] = (
+            snapshot.ask_price
+            if position is not None and position.side is Side.SELL
+            else snapshot.bid_price
+        )
         if position is not None:
             exit_decision = strategy.evaluate_exit(position, snapshot)
             if exit_decision:
-                report = executor.execute_exit_sync(snapshot, position.quantity_lots)
+                report = executor.execute_exit_sync(snapshot, position.quantity_lots, position.side)
+                pnl_per_share = report.fill_price - position.entry_price
+                if position.side is Side.SELL:
+                    pnl_per_share = position.entry_price - report.fill_price
                 gross_pnl = (
-                    (report.fill_price - position.entry_price)
+                    pnl_per_share
                     * Decimal(position.instrument.lot_size)
                     * Decimal(position.quantity_lots)
                 )
@@ -505,7 +524,7 @@ def simulate_candidate(
                 positions.pop(snapshot.instrument.instrument_id, None)
                 trades.append(trade)
                 risk.note_closed_trade(trade)
-            equity = executor.equity_rub(list(positions.values()), latest_bid_by_instrument)
+            equity = executor.equity_rub(list(positions.values()), latest_mark_by_instrument)
             peak_equity = max(peak_equity, equity)
             max_drawdown_rub = max(max_drawdown_rub, peak_equity - equity)
             equity_curve.append(equity)
@@ -514,7 +533,7 @@ def simulate_candidate(
         entry_allowed, entry_reason = risk.entry_allowed_at(snapshot.at)
         if not entry_allowed:
             blocked[entry_reason] += 1
-            equity = executor.equity_rub(list(positions.values()), latest_bid_by_instrument)
+            equity = executor.equity_rub(list(positions.values()), latest_mark_by_instrument)
             peak_equity = max(peak_equity, equity)
             max_drawdown_rub = max(max_drawdown_rub, peak_equity - equity)
             equity_curve.append(equity)
@@ -523,7 +542,7 @@ def simulate_candidate(
         signal, block_reason, _ = strategy.diagnose_entry(snapshot, has_open_position=False)
         if signal is None:
             blocked[block_reason] += 1
-            equity = executor.equity_rub(list(positions.values()), latest_bid_by_instrument)
+            equity = executor.equity_rub(list(positions.values()), latest_mark_by_instrument)
             peak_equity = max(peak_equity, equity)
             max_drawdown_rub = max(max_drawdown_rub, peak_equity - equity)
             equity_curve.append(equity)
@@ -533,7 +552,7 @@ def simulate_candidate(
             if not filter_allowed:
                 filtered_signal_count += 1
                 blocked[filter_reason or "entry_filter_blocked"] += 1
-                equity = executor.equity_rub(list(positions.values()), latest_bid_by_instrument)
+                equity = executor.equity_rub(list(positions.values()), latest_mark_by_instrument)
                 peak_equity = max(peak_equity, equity)
                 max_drawdown_rub = max(max_drawdown_rub, peak_equity - equity)
                 equity_curve.append(equity)
@@ -541,17 +560,18 @@ def simulate_candidate(
 
         quantity_lots, planned_notional_rub, sizing_reason = executor.plan_entry(
             snapshot,
+            side=signal.side,
             open_positions=len(positions),
             max_open_positions=config.max_open_positions,
             default_quantity_lots=config.order_quantity_lots,
             max_position_notional_rub=config.max_position_notional_rub,
             position_sizing_mode=config.position_sizing_mode,
             positions=list(positions.values()),
-            latest_prices=latest_bid_by_instrument,
+            latest_prices=latest_mark_by_instrument,
         )
         if quantity_lots <= 0:
             blocked[sizing_reason] += 1
-            equity = executor.equity_rub(list(positions.values()), latest_bid_by_instrument)
+            equity = executor.equity_rub(list(positions.values()), latest_mark_by_instrument)
             peak_equity = max(peak_equity, equity)
             max_drawdown_rub = max(max_drawdown_rub, peak_equity - equity)
             equity_curve.append(equity)
@@ -564,14 +584,14 @@ def simulate_candidate(
         )
         if not can_open:
             blocked[reason] += 1
-            equity = executor.equity_rub(list(positions.values()), latest_bid_by_instrument)
+            equity = executor.equity_rub(list(positions.values()), latest_mark_by_instrument)
             peak_equity = max(peak_equity, equity)
             max_drawdown_rub = max(max_drawdown_rub, peak_equity - equity)
             equity_curve.append(equity)
             continue
 
         signals_detected += 1
-        report = executor.execute_entry_sync(snapshot, quantity_lots)
+        report = executor.execute_entry_sync(snapshot, quantity_lots, signal.side)
         positions[snapshot.instrument.instrument_id] = Position(
             instrument=snapshot.instrument,
             side=signal.side,
@@ -585,14 +605,17 @@ def simulate_candidate(
             reason=signal.reason,
             metadata={"mode": "paper"},
         )
-        equity = executor.equity_rub(list(positions.values()), latest_bid_by_instrument)
+        latest_mark_by_instrument[snapshot.instrument.instrument_id] = (
+            snapshot.ask_price if signal.side is Side.SELL else snapshot.bid_price
+        )
+        equity = executor.equity_rub(list(positions.values()), latest_mark_by_instrument)
         peak_equity = max(peak_equity, equity)
         max_drawdown_rub = max(max_drawdown_rub, peak_equity - equity)
         equity_curve.append(equity)
 
-    market_value = executor.market_value_rub(list(positions.values()), latest_bid_by_instrument)
-    unrealized_pnl = executor.unrealized_pnl_rub(list(positions.values()), latest_bid_by_instrument)
-    equity = executor.equity_rub(list(positions.values()), latest_bid_by_instrument)
+    market_value = executor.market_value_rub(list(positions.values()), latest_mark_by_instrument)
+    unrealized_pnl = executor.unrealized_pnl_rub(list(positions.values()), latest_mark_by_instrument)
+    equity = executor.equity_rub(list(positions.values()), latest_mark_by_instrument)
     equity_delta = equity - executor.initial_cash_rub
     fees_total = sum((trade.fees_rub for trade in trades), start=Decimal("0"))
     turnover = sum(

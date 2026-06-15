@@ -240,7 +240,11 @@ class ScalperRuntime:
             self.state.blocked_reasons[block_reason] += 1
             return
 
-        quantity_lots, planned_notional_rub, sizing_reason = self._plan_entry(snapshot, executor)
+        quantity_lots, planned_notional_rub, sizing_reason = self._plan_entry(
+            snapshot,
+            signal.side,
+            executor,
+        )
         if quantity_lots <= 0:
             self.state.blocked_reasons[sizing_reason] += 1
             return
@@ -255,7 +259,7 @@ class ScalperRuntime:
             return
 
         self.state.signals_detected += 1
-        report = await executor.execute_entry(snapshot, quantity_lots)
+        report = await executor.execute_entry(snapshot, quantity_lots, signal.side)
         position = Position(
             instrument=snapshot.instrument,
             side=signal.side,
@@ -285,9 +289,12 @@ class ScalperRuntime:
         if position is None:
             return
 
-        report = await executor.execute_exit(snapshot, position.quantity_lots)
+        report = await executor.execute_exit(snapshot, position.quantity_lots, position.side)
+        pnl_per_share = report.fill_price - position.entry_price
+        if position.side is Side.SELL:
+            pnl_per_share = position.entry_price - report.fill_price
         gross_pnl = (
-            (report.fill_price - position.entry_price)
+            pnl_per_share
             * Decimal(position.instrument.lot_size)
             * Decimal(position.quantity_lots)
         )
@@ -372,24 +379,28 @@ class ScalperRuntime:
             ",".join(sorted(position.instrument.ticker for position in self.state.positions.values())) or "none",
         )
 
-    def _plan_entry(self, snapshot: MarketSnapshot, executor: Any) -> tuple[int, Decimal, str]:
+    def _plan_entry(
+        self,
+        snapshot: MarketSnapshot,
+        side: Side,
+        executor: Any,
+    ) -> tuple[int, Decimal, str]:
         if isinstance(executor, PaperExecutor):
             return executor.plan_entry(
                 snapshot,
+                side=side,
                 open_positions=len(self.state.positions),
                 max_open_positions=self.config.max_open_positions,
                 default_quantity_lots=self.config.order_quantity_lots,
                 max_position_notional_rub=self.config.max_position_notional_rub,
                 position_sizing_mode=self.config.position_sizing_mode,
                 positions=list(self.state.positions.values()),
-                latest_prices={
-                    instrument_id: item.bid_price
-                    for instrument_id, item in self.state.last_snapshots.items()
-                },
+                latest_prices=self._latest_mark_prices(),
             )
 
         quantity_lots = self.config.order_quantity_lots
-        planned_notional_rub = snapshot.buy_notional_rub * Decimal(quantity_lots)
+        lot_notional = snapshot.buy_notional_rub if side is Side.BUY else snapshot.sell_notional_rub
+        planned_notional_rub = lot_notional * Decimal(quantity_lots)
         return quantity_lots, planned_notional_rub, "ok"
 
     def _maybe_write_runtime_state(self, now: datetime, executor: Any) -> None:
@@ -410,10 +421,7 @@ class ScalperRuntime:
                 continue
 
     def _write_runtime_state(self, now: datetime, executor: Any) -> None:
-        latest_prices = {
-            instrument_id: snapshot.bid_price
-            for instrument_id, snapshot in self.state.last_snapshots.items()
-        }
+        latest_prices = self._latest_mark_prices()
         positions = list(self.state.positions.values())
         portfolio: dict[str, object]
         if isinstance(executor, PaperExecutor):
@@ -442,7 +450,7 @@ class ScalperRuntime:
                     else Decimal("0")
                 ),
                 "deployment_pct": str(
-                    (market_value_rub / max_gross_exposure_rub * Decimal("100"))
+                    (gross_exposure_rub / max_gross_exposure_rub * Decimal("100"))
                     if max_gross_exposure_rub > 0
                     else Decimal("0")
                 ),
@@ -529,6 +537,20 @@ class ScalperRuntime:
                         if position.instrument.instrument_id in self.state.last_snapshots
                         else position.entry_price
                     ),
+                    "current_ask": str(
+                        self.state.last_snapshots.get(position.instrument.instrument_id, None).ask_price
+                        if position.instrument.instrument_id in self.state.last_snapshots
+                        else position.entry_price
+                    ),
+                    "current_mark": str(
+                        (
+                            self.state.last_snapshots.get(position.instrument.instrument_id, None).bid_price
+                            if position.side is Side.BUY
+                            else self.state.last_snapshots.get(position.instrument.instrument_id, None).ask_price
+                        )
+                        if position.instrument.instrument_id in self.state.last_snapshots
+                        else position.entry_price
+                    ),
                     "opened_at": position.opened_at.isoformat(),
                     "entry_fee_rub": str(position.entry_fee_rub),
                     "entry_reason": position.reason,
@@ -572,6 +594,16 @@ class ScalperRuntime:
         tmp_path = state_path.with_suffix(".json.tmp")
         tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp_path.replace(state_path)
+
+    def _latest_mark_prices(self) -> dict[str, Decimal]:
+        latest_prices: dict[str, Decimal] = {}
+        for instrument_id, snapshot in self.state.last_snapshots.items():
+            position = self.state.positions.get(instrument_id)
+            if position is not None and position.side is Side.SELL:
+                latest_prices[instrument_id] = snapshot.ask_price
+            else:
+                latest_prices[instrument_id] = snapshot.bid_price
+        return latest_prices
 
     def _restore_paper_state(
         self,
