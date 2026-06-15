@@ -193,6 +193,7 @@ class ModerateScalpingStrategy:
         regime_allowed, regime_reason, regime_metrics = self._check_regime_filter(
             state,
             signal_side=signal_side,
+            entry_profile=entry_profile,
         )
         metrics.update(regime_metrics)
         if not regime_allowed:
@@ -294,10 +295,12 @@ class ModerateScalpingStrategy:
         state: InstrumentMomentumState,
         *,
         signal_side: Side,
+        entry_profile: str,
     ) -> tuple[bool, str, dict[str, Decimal | str]]:
         metrics: dict[str, Decimal | str] = {
             "regime_filter_mode": self._config.regime_filter_mode,
             "regime_signal_side": signal_side.value,
+            "regime_entry_profile": entry_profile,
         }
         mode = self._config.regime_filter_mode
         if mode == "off":
@@ -329,10 +332,26 @@ class ModerateScalpingStrategy:
         if mode == "trend_side_aware":
             if signal_side is Side.BUY:
                 if trend_label != "bullish":
+                    if (
+                        self._config.mode == "paper"
+                        and entry_profile == "adaptive"
+                        and trend_label != "bearish"
+                    ):
+                        metrics["regime_filter_profile"] = "adaptive_not_opposite"
+                        return True, "ok", metrics
                     return False, "regime_prev_minute_not_bullish", metrics
+                metrics["regime_filter_profile"] = "strict_side_aware"
                 return True, "ok", metrics
             if trend_label != "bearish":
+                if (
+                    self._config.mode == "paper"
+                    and entry_profile == "adaptive"
+                    and trend_label != "bullish"
+                ):
+                    metrics["regime_filter_profile"] = "adaptive_not_opposite"
+                    return True, "ok", metrics
                 return False, "regime_prev_minute_not_bearish_short", metrics
+            metrics["regime_filter_profile"] = "strict_side_aware"
             return True, "ok", metrics
 
         if mode == "trend_bullish":

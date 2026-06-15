@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -8,6 +9,7 @@ from pathlib import Path
 from moex_scalper.config import ScalperConfig
 from moex_scalper.domain import InstrumentSpec, MarketSnapshot, Side
 from moex_scalper.strategy import ModerateScalpingStrategy
+from moex_scalper.strategy_overlay import MinuteBar
 
 
 def build_config(*, mode: str = "paper") -> ScalperConfig:
@@ -193,6 +195,40 @@ class AdaptiveStrategyTests(unittest.TestCase):
         self.assertEqual(reason, "impulse_too_small")
         self.assertEqual(metrics["adaptive_enabled"], "false")
         self.assertEqual(metrics["adaptive_long_impulse_pass"], "false")
+
+    def test_paper_adaptive_regime_allows_neutral_prev_minute_if_not_opposite(self) -> None:
+        config = replace(build_config(mode="paper"), regime_filter_mode="trend_side_aware")
+        strategy = ModerateScalpingStrategy(config)
+        state = strategy._state_for("instrument-sber")
+        start = datetime(2026, 6, 15, 10, 0, tzinfo=timezone.utc)
+        for index in range(20):
+            close = Decimal("100")
+            state.completed_minute_bars.append(
+                MinuteBar(
+                    at=start + timedelta(minutes=index),
+                    open=close,
+                    high=close,
+                    low=close,
+                    close=close,
+                )
+            )
+
+        allowed, reason, metrics = strategy._check_regime_filter(
+            state,
+            signal_side=Side.BUY,
+            entry_profile="adaptive",
+        )
+        strict_allowed, strict_reason, _ = strategy._check_regime_filter(
+            state,
+            signal_side=Side.BUY,
+            entry_profile="strict",
+        )
+
+        self.assertTrue(allowed)
+        self.assertEqual(reason, "ok")
+        self.assertEqual(metrics["regime_filter_profile"], "adaptive_not_opposite")
+        self.assertFalse(strict_allowed)
+        self.assertEqual(strict_reason, "regime_prev_minute_not_bullish")
 
 
 if __name__ == "__main__":
