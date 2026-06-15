@@ -436,6 +436,7 @@ python3 -m moex_scalper tune --apply --write-report
 - требует достаточный sample по сделкам
 - если candidate из optimizer реально пригоден, обновляет параметры стратегии в `.env`
 - если optimizer пока не готов, но у текущего конфига слишком маленький запас после комиссии, может все равно безопасно поднять `take-profit` до рекомендованного минимума
+- если trade sample еще мал, но `optimizer.signal_coverage` показывает большой in-window sample с почти нулевым ready-rate и одним доминирующим blocker, autotune может сделать один безопасный шаг ослабления именно этого фильтра
 - если research показывает устойчиво лучший regime-filter против baseline, autotune может сам включить его в `.env` через `SCALPER_REGIME_FILTER_MODE`
 - пишет решение в `runtime/tuning/latest.json` и историю в `runtime/tuning/history.jsonl`
 - после успешного apply перезапускает только `paper`-сервис бота
@@ -444,6 +445,14 @@ python3 -m moex_scalper tune --apply --write-report
 
 - `SCALPER_AUTO_APPLY_REGIME_FILTER=1` — разрешает auto-apply research regime candidate
 - `SCALPER_AUTO_TUNE_MIN_REGIME_DELTA_RUB=0` — минимальный `delta_vs_baseline_rub`, чтобы regime-filter считался достойным apply
+
+Для coverage-fallback есть отдельные флаги:
+
+- `SCALPER_AUTO_TUNE_USE_COVERAGE_FALLBACK=1` — разрешает один безопасный step-down по доминирующему blocker
+- `SCALPER_AUTO_TUNE_COVERAGE_MIN_SNAPSHOTS=500` — минимальный in-window sample по market-data
+- `SCALPER_AUTO_TUNE_COVERAGE_MAX_READY_RATE_PCT=0.10` — ready-rate должен быть почти нулевым
+- `SCALPER_AUTO_TUNE_COVERAGE_MIN_BLOCK_SHARE_PCT=60` — один blocker должен доминировать в coverage-summary
+- `SCALPER_AUTO_TUNE_COVERAGE_ALLOWED_BLOCK_REASONS=expected_edge_too_low,impulse_too_small,imbalance_too_low` — какие blockers можно ослаблять автоматически
 
 На сервере это можно запускать и вручную, и автоматически:
 

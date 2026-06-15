@@ -22,6 +22,14 @@ PARAMETER_ENV_MAP: dict[str, str] = {
     "cooldown_seconds": "SCALPER_COOLDOWN_SECONDS",
 }
 REGIME_FILTER_ENV_KEY = "SCALPER_REGIME_FILTER_MODE"
+EXPECTED_EDGE_STEPS = (Decimal("4"), Decimal("6"), Decimal("8"), Decimal("10"), Decimal("12"), Decimal("14"))
+IMPULSE_STEPS = (Decimal("1.0"), Decimal("1.5"), Decimal("2.5"), Decimal("4.0"))
+IMBALANCE_STEPS = (Decimal("0.45"), Decimal("0.50"), Decimal("0.55"), Decimal("0.60"), Decimal("0.66"))
+DEFAULT_COVERAGE_ALLOWED_BLOCK_REASONS = (
+    "expected_edge_too_low",
+    "impulse_too_small",
+    "imbalance_too_low",
+)
 
 
 def tune_parameters(
@@ -77,13 +85,43 @@ def tune_parameters(
 
     enabled = parse_bool(_env_value("SCALPER_AUTO_TUNE_ENABLED"), default=True)
     regime_apply_enabled = parse_bool(_env_value("SCALPER_AUTO_APPLY_REGIME_FILTER", "1"), default=True)
+    coverage_fallback_enabled = parse_bool(_env_value("SCALPER_AUTO_TUNE_USE_COVERAGE_FALLBACK", "1"), default=True)
     min_trades = int(_env_value("SCALPER_AUTO_TUNE_MIN_TRADES", "8"))
     min_delta_rub = Decimal(_env_value("SCALPER_AUTO_TUNE_MIN_DELTA_RUB", "0"))
     min_regime_delta_rub = Decimal(_env_value("SCALPER_AUTO_TUNE_MIN_REGIME_DELTA_RUB", "0"))
+    coverage_min_snapshots = int(_env_value("SCALPER_AUTO_TUNE_COVERAGE_MIN_SNAPSHOTS", "500"))
+    coverage_max_ready_rate_pct = Decimal(_env_value("SCALPER_AUTO_TUNE_COVERAGE_MAX_READY_RATE_PCT", "0.10"))
+    coverage_min_block_share_pct = Decimal(
+        _env_value("SCALPER_AUTO_TUNE_COVERAGE_MIN_BLOCK_SHARE_PCT", "60")
+    )
+    coverage_allowed_reasons = tuple(
+        _parse_csv(_env_value("SCALPER_AUTO_TUNE_COVERAGE_ALLOWED_BLOCK_REASONS"))
+        or DEFAULT_COVERAGE_ALLOWED_BLOCK_REASONS
+    )
     open_positions = len(list((session_payload or {}).get("positions", [])))
     analysis_trade_count = int(((analysis_payload or {}).get("summary") or {}).get("trade_count", 0))
     delta_vs_baseline_rub = Decimal(str(recommendation.get("delta_vs_baseline_rub", "0")))
     regime_delta_vs_baseline_rub = Decimal(str(research_candidate.get("delta_vs_baseline_rub", "0")))
+    analysis_status = str((analysis_payload or {}).get("status") or "missing")
+
+    coverage_candidate_parameters, coverage_fallback = build_coverage_unblocker_candidate(
+        config,
+        current_parameters=current_parameters,
+        analysis_status=analysis_status,
+        analysis_trade_count=analysis_trade_count,
+        min_trades=min_trades,
+        optimizer_payload=optimizer_payload,
+        enabled=coverage_fallback_enabled,
+        min_snapshot_count=coverage_min_snapshots,
+        max_ready_rate_pct=coverage_max_ready_rate_pct,
+        min_dominant_block_share_pct=coverage_min_block_share_pct,
+        allowed_block_reasons=coverage_allowed_reasons,
+    )
+    coverage_candidate_signature = (
+        parameter_signature(coverage_candidate_parameters)
+        if coverage_candidate_parameters
+        else None
+    )
 
     common_reasons: list[str] = []
     if config.mode != "paper":
@@ -125,6 +163,9 @@ def tune_parameters(
     elif headroom_candidate_parameters:
         selected_candidate_parameters = headroom_candidate_parameters
         candidate_source = "headroom_guard"
+    elif coverage_candidate_parameters:
+        selected_candidate_parameters = coverage_candidate_parameters
+        candidate_source = "coverage_unblocker"
 
     regime_reasons: list[str] = []
     selected_regime_filter_mode: str | None = None
@@ -206,6 +247,11 @@ def tune_parameters(
             "recommended_take_profit_bps": str(get_recommended_take_profit_bps(config)),
             "candidate_signature": headroom_candidate_signature,
             "candidate_parameters": headroom_candidate_parameters,
+        },
+        "coverage_fallback": {
+            **coverage_fallback,
+            "candidate_signature": coverage_candidate_signature,
+            "candidate_parameters": coverage_candidate_parameters,
         },
         "analysis": {
             "status": (analysis_payload or {}).get("status"),
@@ -348,6 +394,142 @@ def enforce_take_profit_headroom(
     return normalized, True
 
 
+def build_coverage_unblocker_candidate(
+    config: ScalperConfig,
+    *,
+    current_parameters: dict[str, Any],
+    analysis_status: str,
+    analysis_trade_count: int,
+    min_trades: int,
+    optimizer_payload: dict[str, Any] | None,
+    enabled: bool,
+    min_snapshot_count: int,
+    max_ready_rate_pct: Decimal,
+    min_dominant_block_share_pct: Decimal,
+    allowed_block_reasons: tuple[str, ...],
+) -> tuple[dict[str, str] | None, dict[str, Any]]:
+    details: dict[str, Any] = {
+        "enabled": enabled,
+        "eligible": False,
+        "reason": None,
+        "analysis_status": analysis_status,
+        "analysis_trade_count": analysis_trade_count,
+        "min_trades": min_trades,
+        "min_snapshot_count": min_snapshot_count,
+        "max_ready_rate_pct": str(max_ready_rate_pct),
+        "min_dominant_block_share_pct": str(min_dominant_block_share_pct),
+        "allowed_block_reasons": list(allowed_block_reasons),
+        "snapshot_count": None,
+        "signal_ready_rate_pct": None,
+        "dominant_block_reason": None,
+        "dominant_block_share_pct": None,
+    }
+    if not enabled:
+        details["reason"] = "coverage_fallback_disabled"
+        return None, details
+    if analysis_status == "ok" and analysis_trade_count >= min_trades:
+        details["reason"] = "trade_sample_already_sufficient"
+        return None, details
+    if optimizer_payload is None:
+        details["reason"] = "missing_optimizer_report"
+        return None, details
+    if optimizer_payload.get("status") != "ok":
+        details["reason"] = f"optimizer_{optimizer_payload.get('status', 'unknown')}"
+        return None, details
+
+    coverage_summary = dict((((optimizer_payload.get("signal_coverage") or {}).get("summary")) or {}))
+    snapshot_count = int(coverage_summary.get("snapshot_count", 0))
+    signal_ready_rate_pct = Decimal(str(coverage_summary.get("signal_ready_rate_pct", "0")))
+    details["snapshot_count"] = snapshot_count
+    details["signal_ready_rate_pct"] = str(signal_ready_rate_pct)
+    if snapshot_count < min_snapshot_count:
+        details["reason"] = "not_enough_snapshots"
+        return None, details
+    if signal_ready_rate_pct > max_ready_rate_pct:
+        details["reason"] = "ready_rate_not_low_enough"
+        return None, details
+
+    top_blocked = list(coverage_summary.get("top_blocked_reasons") or [])
+    if not top_blocked:
+        details["reason"] = "no_blocked_reasons"
+        return None, details
+    dominant = dict(top_blocked[0])
+    dominant_reason = str(dominant.get("reason", "")).strip().lower()
+    dominant_count = int(dominant.get("count", 0))
+    dominant_share_pct = (
+        (Decimal(dominant_count) / Decimal(snapshot_count) * Decimal("100"))
+        if snapshot_count > 0
+        else Decimal("0")
+    )
+    details["dominant_block_reason"] = dominant_reason or None
+    details["dominant_block_share_pct"] = str(dominant_share_pct.quantize(Decimal("0.01")))
+    allowed = {reason.strip().lower() for reason in allowed_block_reasons if reason.strip()}
+    if dominant_reason not in allowed:
+        details["reason"] = "dominant_block_reason_not_allowed"
+        return None, details
+    if dominant_share_pct < min_dominant_block_share_pct:
+        details["reason"] = "dominant_block_reason_not_strong_enough"
+        return None, details
+
+    candidate = build_unblocker_step_candidate(
+        current_parameters=current_parameters,
+        dominant_block_reason=dominant_reason,
+    )
+    if candidate is None:
+        details["reason"] = "no_safe_relaxation_available"
+        return None, details
+
+    details["eligible"] = True
+    details["reason"] = "coverage_unblocker_candidate"
+    return candidate, details
+
+
+def build_unblocker_step_candidate(
+    *,
+    current_parameters: dict[str, Any],
+    dominant_block_reason: str,
+) -> dict[str, str] | None:
+    candidate = normalize_parameters(current_parameters)
+    if dominant_block_reason == "expected_edge_too_low":
+        next_value = _step_down_decimal(
+            Decimal(candidate.get("min_expected_edge_bps", "0")),
+            EXPECTED_EDGE_STEPS,
+        )
+        if next_value is None:
+            return None
+        candidate["min_expected_edge_bps"] = str(next_value)
+        return candidate
+    if dominant_block_reason == "impulse_too_small":
+        next_value = _step_down_decimal(
+            Decimal(candidate.get("min_impulse_bps", "0")),
+            IMPULSE_STEPS,
+        )
+        if next_value is None:
+            return None
+        candidate["min_impulse_bps"] = str(next_value)
+        return candidate
+    if dominant_block_reason == "imbalance_too_low":
+        next_value = _step_down_decimal(
+            Decimal(candidate.get("min_imbalance", "0")),
+            IMBALANCE_STEPS,
+        )
+        if next_value is None:
+            return None
+        candidate["min_imbalance"] = str(next_value)
+        return candidate
+    return None
+
+
+def _step_down_decimal(current: Decimal, steps: tuple[Decimal, ...]) -> Decimal | None:
+    ordered = sorted(steps)
+    previous: Decimal | None = None
+    for value in ordered:
+        if current <= value:
+            return previous
+        previous = value
+    return previous if previous is not None and previous < current else None
+
+
 def update_env_file(path: Path, updates: dict[str, str]) -> None:
     lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
     seen: set[str] = set()
@@ -432,3 +614,9 @@ def _entry_window_open(config: ScalperConfig) -> bool:
         return False
     current_time = local_now.time().replace(tzinfo=None)
     return config.entry_start_time <= current_time <= config.entry_end_time
+
+
+def _parse_csv(value: str | None) -> list[str]:
+    if value is None or not value.strip():
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
