@@ -43,6 +43,8 @@ TRACKED_STRATEGY_PROFILE_KEYS = frozenset(
         "SCALPER_COLLECTION_GUARD_MIN_TRADES",
         "SCALPER_COLLECTION_GUARD_MIN_TRADE_SHARE_PCT",
         "SCALPER_COLLECTION_GUARD_MIN_SIGNAL_SHARE_PCT",
+        "SCALPER_STREAM_POLL_FALLBACK_ENABLED",
+        "SCALPER_STREAM_POLL_FALLBACK_INTERVAL_SECONDS",
         "SCALPER_MAX_OPEN_POSITIONS",
         "SCALPER_MAX_POSITION_NOTIONAL_RUB",
         "SCALPER_POSITION_SIZING_MODE",
@@ -243,6 +245,8 @@ class ScalperConfig:
     state_heartbeat_seconds: float
     stream_idle_reconnect_seconds: float
     stream_reconnect_delay_seconds: float
+    stream_poll_fallback_enabled: bool
+    stream_poll_fallback_interval_seconds: float
     watchdog_max_state_age_seconds: int
     watchdog_max_market_data_age_seconds: int
     watchdog_market_data_warmup_seconds: int
@@ -368,6 +372,14 @@ def load_config(args: argparse.Namespace, *, require_auth: bool = True) -> Scalp
         state_heartbeat_seconds=max(1.0, float(os.getenv("SCALPER_STATE_HEARTBEAT_SECONDS", "30"))),
         stream_idle_reconnect_seconds=max(5.0, float(os.getenv("SCALPER_STREAM_IDLE_RECONNECT_SECONDS", "45"))),
         stream_reconnect_delay_seconds=max(0.5, float(os.getenv("SCALPER_STREAM_RECONNECT_DELAY_SECONDS", "1"))),
+        stream_poll_fallback_enabled=parse_bool(
+            os.getenv("SCALPER_STREAM_POLL_FALLBACK_ENABLED", "1"),
+            default=True,
+        ),
+        stream_poll_fallback_interval_seconds=max(
+            1.0,
+            float(os.getenv("SCALPER_STREAM_POLL_FALLBACK_INTERVAL_SECONDS", "5")),
+        ),
         watchdog_max_state_age_seconds=max(5, int(os.getenv("SCALPER_WATCHDOG_MAX_STATE_AGE_SECONDS", "120"))),
         watchdog_max_market_data_age_seconds=max(
             5,

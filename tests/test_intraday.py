@@ -57,6 +57,8 @@ def build_config() -> ScalperConfig:
         state_heartbeat_seconds=30.0,
         stream_idle_reconnect_seconds=45.0,
         stream_reconnect_delay_seconds=1.0,
+        stream_poll_fallback_enabled=True,
+        stream_poll_fallback_interval_seconds=5.0,
         watchdog_max_state_age_seconds=120,
         watchdog_max_market_data_age_seconds=90,
         watchdog_market_data_warmup_seconds=90,

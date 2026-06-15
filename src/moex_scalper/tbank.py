@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterable, AsyncIterator
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from t_tech.invest import AsyncClient
@@ -99,9 +100,13 @@ async def stream_orderbooks(
     stop_event: asyncio.Event,
     idle_timeout_seconds: float,
     reconnect_delay_seconds: float,
+    poll_fallback_enabled: bool,
+    poll_fallback_interval_seconds: float,
 ) -> AsyncIterator[MarketSnapshot]:
     spec_by_uid = {instrument.instrument_id: instrument for instrument in instruments}
     instrument_ids = [instrument.instrument_id for instrument in instruments]
+    loop = asyncio.get_running_loop()
+    last_fallback_poll_monotonic: float | None = None
     while not stop_event.is_set():
         request_iterator = market_data_request_iterator(
             instrument_ids,
@@ -144,6 +149,26 @@ async def stream_orderbooks(
 
         if stop_event.is_set():
             break
+        if poll_fallback_enabled and _should_run_poll_fallback(
+            now_monotonic=loop.time(),
+            last_poll_monotonic=last_fallback_poll_monotonic,
+            min_interval_seconds=poll_fallback_interval_seconds,
+        ):
+            last_fallback_poll_monotonic = loop.time()
+            fallback_count = 0
+            async for snapshot in poll_orderbooks_once(
+                services,
+                instruments,
+                depth=depth,
+            ):
+                fallback_count += 1
+                yield snapshot
+            if fallback_count > 0:
+                LOGGER.warning(
+                    "Market data fallback poll served snapshots=%s reason=%s",
+                    fallback_count,
+                    reconnect_reason,
+                )
 
         LOGGER.warning(
             "Market data stream reconnecting reason=%s delay=%.1fs",
@@ -164,3 +189,59 @@ async def _safe_aclose(stream: object) -> None:
         await closer()
     except Exception:  # noqa: BLE001
         return
+
+
+async def poll_orderbooks_once(
+    services: object,
+    instruments: list[InstrumentSpec],
+    *,
+    depth: int,
+) -> AsyncIterator[MarketSnapshot]:
+    for instrument in instruments:
+        try:
+            orderbook = await services.market_data.get_order_book(
+                instrument_id=instrument.instrument_id,
+                depth=depth,
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning(
+                "Market data fallback poll failed ticker=%s error=%s",
+                instrument.ticker,
+                exc,
+            )
+            continue
+        snapshot = orderbook_response_to_snapshot(orderbook, instrument=instrument)
+        if snapshot is not None:
+            yield snapshot
+
+
+def orderbook_response_to_snapshot(
+    orderbook: object,
+    *,
+    instrument: InstrumentSpec,
+) -> MarketSnapshot | None:
+    bids = getattr(orderbook, "bids", None) or []
+    asks = getattr(orderbook, "asks", None) or []
+    if not bids or not asks:
+        return None
+    bid = bids[0]
+    ask = asks[0]
+    return MarketSnapshot(
+        instrument=instrument,
+        bid_price=quotation_to_decimal(bid.price),
+        ask_price=quotation_to_decimal(ask.price),
+        bid_quantity=int(bid.quantity),
+        ask_quantity=int(ask.quantity),
+        at=getattr(orderbook, "time", None) or datetime.now(timezone.utc),
+    )
+
+
+def _should_run_poll_fallback(
+    *,
+    now_monotonic: float,
+    last_poll_monotonic: float | None,
+    min_interval_seconds: float,
+) -> bool:
+    if last_poll_monotonic is None:
+        return True
+    return (now_monotonic - last_poll_monotonic) >= min_interval_seconds

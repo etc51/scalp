@@ -165,6 +165,8 @@ class ScalperRuntime:
                     stop_event=self.stop_event,
                     idle_timeout_seconds=self.config.stream_idle_reconnect_seconds,
                     reconnect_delay_seconds=self.config.stream_reconnect_delay_seconds,
+                    poll_fallback_enabled=self.config.stream_poll_fallback_enabled,
+                    poll_fallback_interval_seconds=self.config.stream_poll_fallback_interval_seconds,
                 ):
                     await self._handle_snapshot(snapshot, executor)
                     self._maybe_write_runtime_state(snapshot.at, executor)
