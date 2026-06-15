@@ -71,7 +71,7 @@ class ModerateScalpingStrategy:
         if impulse_bps < self._config.min_impulse_bps:
             return None, "impulse_too_small", metrics
 
-        expected_edge_bps = max(self._config.take_profit_bps, impulse_bps * Decimal("1.5"))
+        expected_edge_bps = min(self._config.take_profit_bps, impulse_bps * Decimal("1.5"))
         metrics["expected_edge_bps"] = expected_edge_bps
         if expected_edge_bps < self._config.min_expected_edge_bps:
             return None, "expected_edge_too_low", metrics

@@ -7,7 +7,7 @@ from typing import Any
 
 from .commission import CommissionModel
 from .config import ScalperConfig
-from .diagnostics import build_strategy_diagnostics
+from .diagnostics import build_strategy_diagnostics, resolve_strategy_config_next_action
 from .tbank import open_client, resolve_instruments, validate_account
 
 
@@ -74,10 +74,10 @@ async def build_doctor_payload(config: ScalperConfig) -> tuple[dict[str, Any], i
         payload["next_action"] = "inspect_api_access"
     elif not strategy_diagnostics["viable_for_entry"]:
         payload["status"] = "warning"
-        payload["next_action"] = "raise_take_profit_or_lower_net_floor"
+        payload["next_action"] = resolve_strategy_config_next_action(strategy_diagnostics)
     elif not strategy_diagnostics.get("target_headroom_met", True):
         payload["status"] = "warning"
-        payload["next_action"] = "raise_take_profit_for_headroom"
+        payload["next_action"] = resolve_strategy_config_next_action(strategy_diagnostics)
     elif warnings:
         payload["status"] = "warning"
         payload["next_action"] = "review_strategy_headroom"

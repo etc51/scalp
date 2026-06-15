@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import ScalperConfig, parse_bool
-from .diagnostics import build_strategy_diagnostics
+from .diagnostics import build_strategy_diagnostics, resolve_strategy_config_next_action
 
 
 def run_watchdog(
@@ -218,7 +218,7 @@ def _resolve_next_action(*, restart_reasons: list[str], strategy_diagnostics: di
     if restart_reasons:
         return "restart_services"
     if not strategy_diagnostics.get("viable_for_entry", True):
-        return "raise_take_profit_or_lower_net_floor"
+        return resolve_strategy_config_next_action(strategy_diagnostics)
     if not strategy_diagnostics.get("target_headroom_met", True):
-        return "raise_take_profit_for_headroom"
+        return resolve_strategy_config_next_action(strategy_diagnostics)
     return "none"

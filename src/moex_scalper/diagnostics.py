@@ -40,12 +40,19 @@ def build_strategy_diagnostics(config: ScalperConfig) -> dict[str, Any]:
     net_take_profit_buffer_bps = net_take_profit_bps - config.min_net_take_profit_bps
     target_net_take_profit_buffer_bps = config.target_net_take_profit_buffer_bps
     recommended_take_profit_bps = get_recommended_take_profit_bps(config)
-    viable_for_entry = net_take_profit_bps >= config.min_net_take_profit_bps
+    expected_edge_ceiling_bps = config.take_profit_bps
+    expected_edge_constraint_met = config.min_expected_edge_bps <= expected_edge_ceiling_bps
+    viable_for_entry = (
+        net_take_profit_bps >= config.min_net_take_profit_bps
+        and expected_edge_constraint_met
+    )
     target_headroom_met = net_take_profit_buffer_bps >= target_net_take_profit_buffer_bps
     warnings: list[str] = []
 
     if config.take_profit_bps <= roundtrip_commission_bps:
         warnings.append("take_profit_below_roundtrip_commission")
+    if config.min_expected_edge_bps > expected_edge_ceiling_bps:
+        warnings.append("min_expected_edge_above_take_profit")
     if not viable_for_entry:
         warnings.append("net_take_profit_below_floor")
     elif net_take_profit_buffer_bps <= Decimal("0"):
@@ -58,6 +65,9 @@ def build_strategy_diagnostics(config: ScalperConfig) -> dict[str, Any]:
         "premium_roundtrip_commission_bps": str(roundtrip_commission_bps),
         "configured_take_profit_bps": str(config.take_profit_bps),
         "configured_net_take_profit_bps": str(net_take_profit_bps),
+        "expected_edge_ceiling_bps": str(expected_edge_ceiling_bps),
+        "expected_edge_constraint_met": expected_edge_constraint_met,
+        "min_expected_edge_bps": str(config.min_expected_edge_bps),
         "min_net_take_profit_bps": str(config.min_net_take_profit_bps),
         "net_take_profit_buffer_bps": str(net_take_profit_buffer_bps),
         "target_net_take_profit_buffer_bps": str(target_net_take_profit_buffer_bps),
@@ -70,3 +80,14 @@ def build_strategy_diagnostics(config: ScalperConfig) -> dict[str, Any]:
 
 def is_strategy_config_viable(config: ScalperConfig) -> bool:
     return bool(build_strategy_diagnostics(config)["viable_for_entry"])
+
+
+def resolve_strategy_config_next_action(diagnostics: dict[str, Any]) -> str:
+    warnings = set(str(item) for item in diagnostics.get("warnings") or [])
+    if not diagnostics.get("viable_for_entry", True):
+        if "min_expected_edge_above_take_profit" in warnings:
+            return "lower_expected_edge_or_raise_take_profit"
+        return "raise_take_profit_or_lower_net_floor"
+    if not diagnostics.get("target_headroom_met", True):
+        return "raise_take_profit_for_headroom"
+    return "review_strategy_config"

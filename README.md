@@ -202,6 +202,7 @@ python3 -m moex_scalper run --mode live
 - разрешена только `paper`-торговля, live-режим остается заблокирован до явного разрешения пользователя
 - short по акциям по умолчанию выключен
 - `SCALPER_MIN_NET_TAKE_PROFIT_BPS` задает минимальную чистую цель в `bps` после roundtrip-комиссии Premium; это режет слишком тесные сделки даже если импульс формально проходит
+- `SCALPER_MIN_EXPECTED_EDGE_BPS` теперь реально фильтрует слабые входы: ожидаемый edge ограничивается самим `take-profit`, поэтому слишком маленький импульс уже не проходит только из-за высокого configured `take-profit`
 - `SCALPER_TARGET_NET_TAKE_PROFIT_BUFFER_BPS` задает желаемый запас сверх этого floor; `doctor`, `summary`, `dashboard` и autotune показывают и используют рекомендуемый минимальный `take-profit`
 - `SCALPER_REGIME_FILTER_MODE` влияет только на новые входы и использует только уже закрытую предыдущую 1m-минуту инструмента:
   - `off` — без regime-filter

@@ -356,7 +356,7 @@ def build_candidate_configs(base: ScalperConfig) -> list[ScalperConfig]:
         "take_profit_bps": [Decimal("8"), Decimal("10"), Decimal("12"), Decimal("14"), Decimal("16"), Decimal("18")],
         "stop_loss_bps": [Decimal("4"), Decimal("6"), Decimal("8"), Decimal("10")],
         "time_stop_seconds": [3.0, 4.0, 6.0, 8.0],
-        "min_expected_edge_bps": [Decimal("4"), Decimal("6"), Decimal("8"), Decimal("10")],
+        "min_expected_edge_bps": [Decimal("4"), Decimal("6"), Decimal("8"), Decimal("10"), Decimal("12"), Decimal("14")],
         "min_net_take_profit_bps": [Decimal("2"), Decimal("4"), Decimal("6"), Decimal("8")],
         "cooldown_seconds": [0.0, 1.0, 3.0, 5.0],
     }

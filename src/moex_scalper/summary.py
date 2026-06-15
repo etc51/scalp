@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import ScalperConfig
+from .diagnostics import resolve_strategy_config_next_action
 
 
 def build_daily_summary(
@@ -129,9 +130,15 @@ def build_focus(payload: dict[str, Any]) -> list[str]:
     if doctor.get("status") == "error":
         focus.append("Doctor не смог подтвердить готовность API или watchlist перед сессией.")
     if not strategy_diagnostics.get("viable_for_entry", True):
-        focus.append(
-            "Текущий take-profit после комиссии ниже минимального net-floor; новые входы будут блокироваться."
-        )
+        warnings = set(str(item) for item in strategy_diagnostics.get("warnings") or [])
+        if "min_expected_edge_above_take_profit" in warnings:
+            focus.append(
+                "Минимальный expected-edge выше take-profit; новые входы будут блокироваться до правки порога или цели."
+            )
+        else:
+            focus.append(
+                "Текущий take-profit после комиссии ниже минимального net-floor; новые входы будут блокироваться."
+            )
     else:
         warnings = list(strategy_diagnostics.get("warnings") or [])
         if "net_take_profit_no_headroom" in warnings or "net_take_profit_below_target_buffer" in warnings:
@@ -181,6 +188,9 @@ def build_headline(payload: dict[str, Any]) -> str:
     if doctor.get("status") == "error":
         return "Doctor не подтвердил готовность API или watchlist; перед сессией нужен ручной разбор."
     if not strategy_diagnostics.get("viable_for_entry", True):
+        warnings = set(str(item) for item in strategy_diagnostics.get("warnings") or [])
+        if "min_expected_edge_above_take_profit" in warnings:
+            return "Конфиг стратегии блокирует новые входы: expected-edge floor выше take-profit."
         return "Конфиг стратегии блокирует новые входы: нужно поднять take-profit или ослабить net-floor."
     if not strategy_diagnostics.get("target_headroom_met", True):
         return (
@@ -213,9 +223,9 @@ def build_next_action(payload: dict[str, Any]) -> str:
     if doctor.get("status") == "error":
         return "inspect_api_access"
     if not strategy_diagnostics.get("viable_for_entry", True):
-        return "raise_take_profit_or_lower_net_floor"
+        return resolve_strategy_config_next_action(strategy_diagnostics)
     if not strategy_diagnostics.get("target_headroom_met", True):
-        return "raise_take_profit_for_headroom"
+        return resolve_strategy_config_next_action(strategy_diagnostics)
     if doctor.get("next_action") not in {None, "none", "review_strategy_headroom"}:
         return str(doctor.get("next_action"))
     if watchdog.get("next_action") not in {None, "none"}:
