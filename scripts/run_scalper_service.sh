@@ -1,39 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROJECT_DIR="${PROJECT_DIR:-/opt/tbank-latency-check}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./common_service_env.sh
+source "$SCRIPT_DIR/common_service_env.sh"
 
-cd "$PROJECT_DIR"
-
-if [[ ! -f .env ]]; then
-  echo "Missing $PROJECT_DIR/.env" >&2
-  exit 1
-fi
-
-if [[ ! -x .venv/bin/python3 ]]; then
-  echo "Missing virtualenv at $PROJECT_DIR/.venv" >&2
-  exit 1
-fi
-
-if [[ -z "${GRPC_DEFAULT_SSL_ROOTS_FILE_PATH:-}" ]]; then
-  CERT_PATH="$(
-    .venv/bin/python3 - <<'PY'
-from pathlib import Path
-
-try:
-    import t_tech.invest as invest
-except Exception:
-    print("")
-    raise SystemExit(0)
-
-cert = Path(invest.__file__).resolve().parent / "certs" / "RussianTrustedRootCA.pem"
-print(cert if cert.exists() else "")
-PY
-  )"
-  if [[ -n "$CERT_PATH" ]]; then
-    export GRPC_DEFAULT_SSL_ROOTS_FILE_PATH="$CERT_PATH"
-  fi
-fi
+prepare_moex_scalper_service
 
 mkdir -p runtime reports
 

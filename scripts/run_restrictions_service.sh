@@ -1,37 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROJECT_DIR="${PROJECT_DIR:-/opt/tbank-latency-check}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./common_service_env.sh
+source "$SCRIPT_DIR/common_service_env.sh"
 
-cd "$PROJECT_DIR"
-
-if [[ ! -f .env ]]; then
-  echo "Missing $PROJECT_DIR/.env" >&2
-  exit 1
-fi
-
-if [[ ! -x .venv/bin/python3 ]]; then
-  echo "Missing virtualenv at $PROJECT_DIR/.venv" >&2
-  exit 1
-fi
-
-while IFS= read -r RAW_LINE || [[ -n "$RAW_LINE" ]]; do
-  LINE="${RAW_LINE%$'\r'}"
-  if [[ -z "$LINE" || "$LINE" == \#* || "$LINE" != *=* ]]; then
-    continue
-  fi
-
-  KEY="${LINE%%=*}"
-  VALUE="${LINE#*=}"
-
-  if [[ "$VALUE" == \"*\" && "$VALUE" == *\" ]]; then
-    VALUE="${VALUE:1:-1}"
-  elif [[ "$VALUE" == \'*\' && "$VALUE" == *\' ]]; then
-    VALUE="${VALUE:1:-1}"
-  fi
-
-  export "$KEY=$VALUE"
-done < .env
+prepare_moex_scalper_service
 
 mkdir -p runtime
 

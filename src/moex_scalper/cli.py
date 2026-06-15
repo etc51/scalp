@@ -19,6 +19,13 @@ from .tuning import tune_parameters
 from .watchdog import run_watchdog
 
 
+def _int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    return int(raw)
+
+
 async def run_doctor(config: ScalperConfig) -> int:
     payload, exit_code = await build_doctor_payload(config)
     print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -32,7 +39,9 @@ def main() -> int:
 
     if args.command == "dashboard":
         runtime_dir = Path(os.getenv("SCALPER_RUNTIME_DIR", "runtime"))
-        serve_dashboard(host=args.host, port=args.port, runtime_dir=runtime_dir)
+        host = args.host or os.getenv("SCALPER_DASHBOARD_HOST", "0.0.0.0")
+        port = args.port if args.port is not None else _int_env("SCALPER_DASHBOARD_PORT", 8080)
+        serve_dashboard(host=host, port=port, runtime_dir=runtime_dir)
         return 0
 
     config = load_config(args, require_auth=args.command in {"doctor", "run"})
@@ -44,37 +53,46 @@ def main() -> int:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return exit_code
     if args.command == "optimize":
+        top = args.top if args.top is not None else 10
+        days = args.days if args.days is not None else _int_env("SCALPER_OPTIMIZER_DAYS", 5)
+        min_trades = (
+            args.min_trades if args.min_trades is not None else _int_env("SCALPER_OPTIMIZER_MIN_TRADES", 5)
+        )
         payload = optimize_parameters(
             config,
             date_key=args.date,
             input_path=args.input,
-            top_n=args.top,
-            days=args.days,
-            min_trades=args.min_trades,
+            top_n=top,
+            days=days,
+            min_trades=min_trades,
             write_report=args.write_report,
         )
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
 
     if args.command == "analyze":
+        days = args.days if args.days is not None else _int_env("SCALPER_ANALYSIS_DAYS", 5)
+        top = args.top if args.top is not None else _int_env("SCALPER_ANALYSIS_TOP", 5)
         payload = analyze_trades(
             config,
             date_key=args.date,
             input_path=args.input,
-            top_n=args.top,
-            days=args.days,
+            top_n=top,
+            days=days,
             write_report=args.write_report,
         )
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
 
     if args.command == "research":
+        days = args.days if args.days is not None else _int_env("SCALPER_RESEARCH_DAYS", 5)
+        top = args.top if args.top is not None else _int_env("SCALPER_RESEARCH_TOP", 5)
         payload = build_indicator_research(
             config,
             date_key=args.date,
             input_path=args.input,
-            top_n=args.top,
-            days=args.days,
+            top_n=top,
+            days=days,
             write_report=args.write_report,
         )
         print(json.dumps(payload, ensure_ascii=False, indent=2))
