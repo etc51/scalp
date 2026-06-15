@@ -349,6 +349,8 @@ def restore_runtime_entities(
         str(ticker).upper(): _decimal(value)
         for ticker, value in dict(risk_payload.get("ticker_guard_loss_anchor_rub", {})).items()
     }
+    restored_signals_detected = int(payload.get("signals_detected", 0))
+    restored_signal_candidates = payload.get("signal_candidates_detected")
     return {
         "cash_rub": _decimal(payload.get("cash_rub"), default="0"),
         "positions": positions,
@@ -362,8 +364,12 @@ def restore_runtime_entities(
         "ticker_guard_loss_anchor_rub": ticker_guard_loss_anchor_rub,
         "blocked_reasons": Counter(dict(payload.get("blocked_reasons", {}))),
         "snapshots_processed": int(payload.get("snapshots_processed", 0)),
-        "signal_candidates_detected": int(payload.get("signal_candidates_detected", 0)),
-        "signals_detected": int(payload.get("signals_detected", 0)),
+        "signal_candidates_detected": (
+            restored_signals_detected
+            if restored_signal_candidates is None
+            else int(restored_signal_candidates)
+        ),
+        "signals_detected": restored_signals_detected,
         "execution_blocked_signals": int(payload.get("execution_blocked_signals", 0)),
         "execution_blocked_reasons": Counter(dict(payload.get("execution_blocked_reasons", {}))),
         "recorded_market_snapshots_total": int(market_history_payload.get("recorded_snapshots_total", 0)),
