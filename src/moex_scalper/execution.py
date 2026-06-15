@@ -75,7 +75,13 @@ class PaperExecutor:
         return quantity_lots, entry_notional, "ok"
 
     def execute_entry_sync(self, snapshot: MarketSnapshot, quantity_lots: int) -> ExecutionReport:
-        report = self._build_report(snapshot, quantity_lots, Side.BUY, snapshot.ask_price)
+        report = self._build_report(
+            snapshot,
+            quantity_lots,
+            Side.BUY,
+            snapshot.ask_price,
+            moment=snapshot.at,
+        )
         total_cost = report.fill_price * Decimal(snapshot.instrument.lot_size) * Decimal(quantity_lots) + report.fee_rub
         self.cash_rub -= total_cost
         report.metadata["cash_after_rub"] = str(self.cash_rub)
@@ -85,7 +91,13 @@ class PaperExecutor:
         return self.execute_entry_sync(snapshot, quantity_lots)
 
     def execute_exit_sync(self, snapshot: MarketSnapshot, quantity_lots: int) -> ExecutionReport:
-        report = self._build_report(snapshot, quantity_lots, Side.SELL, snapshot.bid_price)
+        report = self._build_report(
+            snapshot,
+            quantity_lots,
+            Side.SELL,
+            snapshot.bid_price,
+            moment=snapshot.at,
+        )
         proceeds = report.fill_price * Decimal(snapshot.instrument.lot_size) * Decimal(quantity_lots)
         self.cash_rub += proceeds - report.fee_rub
         report.metadata["cash_after_rub"] = str(self.cash_rub)
@@ -144,18 +156,20 @@ class PaperExecutor:
         quantity_lots: int,
         side: Side,
         fill_price: Decimal,
+        *,
+        moment: datetime | None = None,
     ) -> ExecutionReport:
         notional = fill_price * Decimal(snapshot.instrument.lot_size) * Decimal(quantity_lots)
         fee_rub = self.commission_model.fee_rub(notional)
-        moment = utc_now()
+        executed_at = moment or utc_now()
         return ExecutionReport(
             side=side,
             quantity_lots=quantity_lots,
             fill_price=fill_price,
             fee_rub=fee_rub,
             status="EXECUTION_REPORT_STATUS_FILL",
-            submitted_at=moment,
-            filled_at=moment,
+            submitted_at=executed_at,
+            filled_at=executed_at,
             post_order_async_ms=0.0,
             to_fill_ms=0.0,
             metadata={"mode": "paper"},
