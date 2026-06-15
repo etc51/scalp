@@ -35,6 +35,31 @@ done < .env
 
 mkdir -p runtime
 
+ANALYSIS_DAYS="${SCALPER_ANALYSIS_DAYS:-5}"
+ANALYSIS_TOP="${SCALPER_ANALYSIS_TOP:-5}"
+OPTIMIZER_DAYS="${SCALPER_OPTIMIZER_DAYS:-5}"
+OPTIMIZER_MIN_TRADES="${SCALPER_OPTIMIZER_MIN_TRADES:-5}"
+RESEARCH_DAYS="${SCALPER_RESEARCH_DAYS:-5}"
+RESEARCH_TOP="${SCALPER_RESEARCH_TOP:-5}"
+
+# Refresh the prerequisite reports inline so tune always sees same-day analysis,
+# optimizer, and research outputs even if timers drift or a manual run happens
+# before the nightly pipeline finishes.
+.venv/bin/python3 -m moex_scalper analyze \
+  --days "$ANALYSIS_DAYS" \
+  --top "$ANALYSIS_TOP" \
+  --write-report
+
+.venv/bin/python3 -m moex_scalper optimize \
+  --days "$OPTIMIZER_DAYS" \
+  --min-trades "$OPTIMIZER_MIN_TRADES" \
+  --write-report
+
+.venv/bin/python3 -m moex_scalper research \
+  --days "$RESEARCH_DAYS" \
+  --top "$RESEARCH_TOP" \
+  --write-report
+
 OUTPUT_FILE="$(mktemp)"
 cleanup() {
   rm -f "$OUTPUT_FILE"

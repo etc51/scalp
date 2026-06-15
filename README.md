@@ -398,7 +398,7 @@ python3 -m moex_scalper summarize --write-report
 
 - ручной запуск: `sudo systemctl start moex-scalper-summary.service`
 - автоматический таймер: `moex-scalper-summary.timer`
-- по умолчанию таймер срабатывает в `18:26 MSK` по `понедельник-пятница`
+- по умолчанию таймер срабатывает в `18:30 MSK` по `понедельник-пятница`, уже после nightly autotune
 
 ## Safe Paper Autotune
 
@@ -412,6 +412,7 @@ python3 -m moex_scalper tune --apply --write-report
 
 Что делает:
 
+- перед самим apply сначала обновляет свежие `analysis`, `optimizer` и `research`, чтобы autotune видел актуальные same-day отчеты даже если nightly timers сработали с задержкой или tune запустили вручную
 - читает `runtime/analysis/latest.json` и `runtime/optimizer/latest.json`
 - читает `runtime/research/latest.json` и может отдельно применить лучший regime-filter из regime-replay
 - проверяет, что мы все еще в `paper`-режиме
@@ -433,7 +434,7 @@ python3 -m moex_scalper tune --apply --write-report
 
 - ручной запуск: `sudo systemctl start moex-scalper-tune.service`
 - автоматический таймер: `moex-scalper-tune.timer`
-- по умолчанию таймер срабатывает в `18:14 MSK` по `понедельник-пятница`
+- по умолчанию таймер срабатывает в `18:24 MSK` по `понедельник-пятница`, уже после nightly research
 
 Это влияет только на новые входы после рестарта. Уже сохраненные открытые `paper`-позиции продолжают жить со своими параметрами, записанными в session-state.
 
