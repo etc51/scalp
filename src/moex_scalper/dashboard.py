@@ -594,6 +594,8 @@ HTML = """<!doctype html>
           ["Applied", String(governance.applied)],
           ["Selected Action", governance.selected_action || "—"],
           ["Selection Reason", governance.selection_reason || "—"],
+          ["Tuning Score", governance.action_scores?.tuning?.score ?? "—"],
+          ["Restrictions Score", governance.action_scores?.restrictions?.score ?? "—"],
           ["Ready Actions", (governance.ready_actions || []).join(", ") || "—"],
           ["Deferred Actions", (governance.deferred_actions || []).join(", ") || "—"],
           ["Applied Actions", (governance.applied_actions || []).join(", ") || "—"],

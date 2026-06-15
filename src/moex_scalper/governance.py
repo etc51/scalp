@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -67,7 +68,7 @@ def run_governor(
 
     tuning_ready = tuning_preview.get("decision") == "ready_to_apply"
     restrictions_ready = restrictions_preview.get("decision") == "ready_to_apply"
-    selected_action, selection_reason = choose_governor_action(
+    selected_action, selection_reason, action_scores = choose_governor_action(
         tuning_preview=tuning_preview,
         tuning_ready=tuning_ready,
         restrictions_preview=restrictions_preview,
@@ -114,6 +115,7 @@ def run_governor(
         "mode": config.mode,
         "apply_requested": apply,
         "applied": applied_any,
+        "action_scores": action_scores,
         "selected_action": selected_action,
         "selection_reason": selection_reason,
         "decision": build_decision(
@@ -201,31 +203,184 @@ def choose_governor_action(
     tuning_ready: bool,
     restrictions_preview: dict[str, Any],
     restrictions_ready: bool,
-) -> tuple[str | None, str]:
+) -> tuple[str | None, str, dict[str, Any]]:
+    action_scores = build_action_scores(
+        tuning_preview=tuning_preview,
+        tuning_ready=tuning_ready,
+        restrictions_preview=restrictions_preview,
+        restrictions_ready=restrictions_ready,
+    )
     if not tuning_ready and not restrictions_ready:
-        return None, "no_ready_actions"
+        return None, "no_ready_actions", action_scores
 
-    tuning_sources = {
+    ready_items = [
+        (action, details)
+        for action, details in action_scores.items()
+        if details.get("ready")
+    ]
+    ranked = sorted(
+        ready_items,
+        key=lambda item: (
+            float(item[1].get("score", 0.0)),
+            -int(item[1].get("scope_penalty", 0)),
+            int(item[1].get("tie_break_rank", 0)),
+        ),
+        reverse=True,
+    )
+    selected_action, selected_details = ranked[0]
+    next_best = ranked[1] if len(ranked) > 1 else None
+    selection_reason = str(selected_details.get("selection_reason") or "highest_score")
+    if next_best is not None:
+        selection_reason = (
+            f"{selection_reason}; "
+            f"{selected_action}={selected_details.get('score')} "
+            f"vs {next_best[0]}={next_best[1].get('score')}"
+        )
+    return selected_action, selection_reason, action_scores
+
+
+def build_action_scores(
+    *,
+    tuning_preview: dict[str, Any],
+    tuning_ready: bool,
+    restrictions_preview: dict[str, Any],
+    restrictions_ready: bool,
+) -> dict[str, Any]:
+    return {
+        "tuning": score_tuning_action(tuning_preview, ready=tuning_ready),
+        "restrictions": score_restrictions_action(restrictions_preview, ready=restrictions_ready),
+    }
+
+
+def score_tuning_action(payload: dict[str, Any], *, ready: bool) -> dict[str, Any]:
+    details: dict[str, Any] = {
+        "ready": ready,
+        "score": 0.0,
+        "selection_reason": None,
+        "score_components": [],
+        "scope_penalty": 0,
+        "tie_break_rank": 1,
+    }
+    if not ready:
+        details["selection_reason"] = "not_ready"
+        return details
+
+    score = Decimal("0")
+    sources = {
         part.strip()
-        for part in str(tuning_preview.get("candidate_source") or "").split("+")
+        for part in str(payload.get("candidate_source") or "").split("+")
         if part.strip()
     }
-    tuning_diagnostics = dict(tuning_preview.get("strategy_diagnostics") or {})
-    if tuning_ready and (
-        not tuning_diagnostics.get("viable_for_entry", True)
-        or "headroom_guard" in tuning_sources
-        or "optimizer_headroom_guard" in tuning_sources
-        or "coverage_unblocker" in tuning_sources
-    ):
-        return "tuning", "tuning_unblocks_global_config"
+    diagnostics = dict(payload.get("strategy_diagnostics") or {})
+    changed_keys = list(payload.get("changed_keys") or [])
+    changed_count = len(changed_keys)
 
-    if restrictions_ready:
-        return "restrictions", "prefer_narrow_restrictions_first"
+    if not diagnostics.get("viable_for_entry", True):
+        score += Decimal("120")
+        details["score_components"].append("global_config_block=120")
+        details["selection_reason"] = "global_config_unblocker"
+    if "headroom_guard" in sources or "optimizer_headroom_guard" in sources:
+        score += Decimal("110")
+        details["score_components"].append("headroom_guard=110")
+        details["selection_reason"] = details["selection_reason"] or "headroom_guard"
+    if "coverage_unblocker" in sources:
+        score += Decimal("95")
+        details["score_components"].append("coverage_unblocker=95")
+        details["selection_reason"] = details["selection_reason"] or "coverage_unblocker"
+    if "optimizer" in sources:
+        score += Decimal("35")
+        details["score_components"].append("optimizer_candidate=35")
+        delta = _decimal((((payload.get("optimizer") or {}).get("delta_vs_baseline_rub"))), default="0")
+        trade_count = int(((payload.get("optimizer") or {}).get("trade_count", 0)) or 0)
+        profit_factor = _decimal((((payload.get("optimizer") or {}).get("profit_factor"))), default="0")
+        delta_score = min(max(delta, Decimal("0")) / Decimal("20"), Decimal("25"))
+        trade_score = min(Decimal(trade_count), Decimal("15"))
+        pf_score = min(max(profit_factor - Decimal("1"), Decimal("0")) * Decimal("20"), Decimal("10"))
+        score += delta_score + trade_score + pf_score
+        details["score_components"].append(f"optimizer_delta={_fmt_decimal(delta_score)}")
+        details["score_components"].append(f"optimizer_trades={_fmt_decimal(trade_score)}")
+        details["score_components"].append(f"optimizer_pf={_fmt_decimal(pf_score)}")
+        details["selection_reason"] = details["selection_reason"] or "optimizer_candidate"
+    if "research_regime" in sources:
+        score += Decimal("30")
+        details["score_components"].append("research_regime=30")
+        details["selection_reason"] = details["selection_reason"] or "research_regime"
 
-    if tuning_ready:
-        return "tuning", "fallback_to_tuning"
+    scope_penalty = max(0, changed_count - 1) * 6
+    combo_penalty = max(0, len(sources) - 1) * 5
+    total_penalty = scope_penalty + combo_penalty
+    if total_penalty:
+        score -= Decimal(total_penalty)
+        details["score_components"].append(f"scope_penalty=-{total_penalty}")
+    details["scope_penalty"] = total_penalty
+    details["score"] = float(round(score, 3))
+    if details["selection_reason"] is None:
+        details["selection_reason"] = "tuning_ready"
+    return details
 
-    return None, "no_ready_actions"
+
+def score_restrictions_action(payload: dict[str, Any], *, ready: bool) -> dict[str, Any]:
+    details: dict[str, Any] = {
+        "ready": ready,
+        "score": 0.0,
+        "selection_reason": None,
+        "score_components": [],
+        "scope_penalty": 0,
+        "tie_break_rank": 2,
+    }
+    if not ready:
+        details["selection_reason"] = "not_ready"
+        return details
+
+    score = Decimal("0")
+    source = str(payload.get("candidate_source") or "").strip()
+    active = dict(payload.get("proposed_restrictions") or {})
+    affected_count = len(list(active.get("disabled_tickers") or [])) + len(list(active.get("blocked_entry_hours") or []))
+    breakdown = dict(payload.get("candidate_breakdown") or {})
+
+    if source == "analysis":
+        score += Decimal("70")
+        details["score_components"].append("analysis_source=70")
+        details["selection_reason"] = "analysis_restriction"
+        trade_count = int(((payload.get("analysis") or {}).get("trade_count", 0)) or 0)
+        trade_score = min(Decimal(trade_count), Decimal("20"))
+        score += trade_score
+        details["score_components"].append(f"analysis_trades={_fmt_decimal(trade_score)}")
+        total_loss = sum(
+            max(-_decimal(item.get("net_pnl_rub"), default="0"), Decimal("0"))
+            for item in list(breakdown.get("tickers") or []) + list(breakdown.get("hours") or [])
+        )
+        loss_score = min(total_loss / Decimal("100"), Decimal("15"))
+        score += loss_score
+        details["score_components"].append(f"analysis_loss={_fmt_decimal(loss_score)}")
+    elif source == "optimizer_signal_coverage":
+        score += Decimal("55")
+        details["score_components"].append("coverage_source=55")
+        details["selection_reason"] = "coverage_restriction"
+        snapshot_count = int(((payload.get("optimizer") or {}).get("snapshot_count", 0)) or 0)
+        snapshot_score = min(Decimal(snapshot_count) / Decimal("200"), Decimal("15"))
+        score += snapshot_score
+        details["score_components"].append(f"coverage_snapshots={_fmt_decimal(snapshot_score)}")
+        dominant_share = max(
+            (
+                _decimal(item.get("dominant_block_share_pct"), default="0")
+                for item in list(breakdown.get("tickers") or []) + list(breakdown.get("hours") or [])
+            ),
+            default=Decimal("0"),
+        )
+        dominant_score = min(dominant_share / Decimal("10"), Decimal("10"))
+        score += dominant_score
+        details["score_components"].append(f"coverage_dominant_share={_fmt_decimal(dominant_score)}")
+    else:
+        details["selection_reason"] = "restrictions_ready"
+
+    scope_penalty = max(0, affected_count - 1) * 8
+    if scope_penalty:
+        score -= Decimal(scope_penalty)
+        details["score_components"].append(f"scope_penalty=-{scope_penalty}")
+    details["scope_penalty"] = scope_penalty
+    details["score"] = float(round(score, 3))
+    return details
 
 
 def write_governance_report(runtime_dir: Path, payload: dict[str, Any]) -> None:
@@ -241,3 +396,13 @@ def write_governance_report(runtime_dir: Path, payload: dict[str, Any]) -> None:
 
 def _env_value(key: str, default: str | None = None) -> str | None:
     return __import__("os").getenv(key, default)
+
+
+def _decimal(value: Any, default: str = "0") -> Decimal:
+    if value is None or value == "":
+        return Decimal(default)
+    return Decimal(str(value))
+
+
+def _fmt_decimal(value: Decimal) -> str:
+    return str(value.quantize(Decimal("0.001")))
