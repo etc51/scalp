@@ -221,35 +221,61 @@ class ModerateScalpingStrategy:
         ), "ok", metrics
 
     def evaluate_exit(self, position: Position, snapshot: MarketSnapshot) -> ExitDecision | None:
+        current_price: Decimal
         if position.side is Side.BUY:
             if snapshot.bid_price <= 0:
                 return None
+            current_price = snapshot.bid_price
             target_price = position.entry_price * (
                 Decimal("1") + position.take_profit_bps / Decimal("10000")
             )
             stop_price = position.entry_price * (
                 Decimal("1") - position.stop_loss_bps / Decimal("10000")
             )
-            if snapshot.bid_price >= target_price:
+            if current_price >= target_price:
                 return ExitDecision(reason="take_profit")
-            if snapshot.bid_price <= stop_price:
+            if current_price <= stop_price:
                 return ExitDecision(reason="stop_loss")
         else:
             if snapshot.ask_price <= 0:
                 return None
+            current_price = snapshot.ask_price
             target_price = position.entry_price * (
                 Decimal("1") - position.take_profit_bps / Decimal("10000")
             )
             stop_price = position.entry_price * (
                 Decimal("1") + position.stop_loss_bps / Decimal("10000")
             )
-            if snapshot.ask_price <= target_price:
+            if current_price <= target_price:
                 return ExitDecision(reason="take_profit")
-            if snapshot.ask_price >= stop_price:
+            if current_price >= stop_price:
                 return ExitDecision(reason="stop_loss")
-        if (snapshot.at - position.opened_at).total_seconds() >= position.time_stop_seconds:
+        elapsed_seconds = (snapshot.at - position.opened_at).total_seconds()
+        if elapsed_seconds < position.time_stop_seconds:
+            return None
+
+        gross_pnl_rub = self._estimate_gross_pnl_rub(position, current_price=current_price)
+        estimated_exit_fee_rub = self._commission_model.fee_rub(
+            current_price * Decimal(position.instrument.lot_size) * Decimal(position.quantity_lots)
+        )
+        estimated_net_pnl_rub = gross_pnl_rub - position.entry_fee_rub - estimated_exit_fee_rub
+        if gross_pnl_rub <= 0:
+            return ExitDecision(reason="time_stop")
+        if estimated_net_pnl_rub >= 0:
+            return ExitDecision(reason="time_stop")
+        if elapsed_seconds >= (position.time_stop_seconds * 2):
             return ExitDecision(reason="time_stop")
         return None
+
+    def _estimate_gross_pnl_rub(self, position: Position, *, current_price: Decimal) -> Decimal:
+        pnl_per_share = current_price - position.entry_price
+        if position.side is Side.SELL:
+            pnl_per_share = position.entry_price - current_price
+        return (
+            pnl_per_share
+            * Decimal(position.instrument.lot_size)
+            * Decimal(position.quantity_lots)
+        )
 
     def _update_minute_state(self, state: InstrumentMomentumState, snapshot: MarketSnapshot) -> None:
         local_minute = snapshot.at.astimezone(self._config.timezone).replace(second=0, microsecond=0)

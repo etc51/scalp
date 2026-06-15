@@ -7,7 +7,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from moex_scalper.config import ScalperConfig
-from moex_scalper.domain import InstrumentSpec, MarketSnapshot, Side
+from moex_scalper.domain import InstrumentSpec, MarketSnapshot, Position, Side
 from moex_scalper.strategy import ModerateScalpingStrategy
 from moex_scalper.strategy_overlay import MinuteBar
 
@@ -229,6 +229,71 @@ class AdaptiveStrategyTests(unittest.TestCase):
         self.assertEqual(metrics["regime_filter_profile"], "adaptive_not_opposite")
         self.assertFalse(strict_allowed)
         self.assertEqual(strict_reason, "regime_prev_minute_not_bullish")
+
+    def test_time_stop_waits_for_fee_break_even_before_forcing_exit(self) -> None:
+        strategy = ModerateScalpingStrategy(build_config(mode="paper"))
+        instrument = build_instrument()
+        opened_at = datetime(2026, 6, 15, 10, 15, tzinfo=timezone.utc)
+        position = Position(
+            instrument=instrument,
+            side=Side.BUY,
+            quantity_lots=1,
+            entry_price=Decimal("100"),
+            opened_at=opened_at,
+            take_profit_bps=Decimal("50"),
+            stop_loss_bps=Decimal("50"),
+            time_stop_seconds=8.0,
+            entry_fee_rub=Decimal("0.4"),
+            reason="profile=adaptive",
+            metadata={},
+        )
+
+        soft_timeout_snapshot = build_snapshot(
+            instrument,
+            opened_at + timedelta(seconds=8),
+            bid_price="100.05",
+            ask_price="100.06",
+        )
+        hard_timeout_snapshot = build_snapshot(
+            instrument,
+            opened_at + timedelta(seconds=16),
+            bid_price="100.05",
+            ask_price="100.06",
+        )
+
+        self.assertIsNone(strategy.evaluate_exit(position, soft_timeout_snapshot))
+        hard_exit = strategy.evaluate_exit(position, hard_timeout_snapshot)
+        assert hard_exit is not None
+        self.assertEqual(hard_exit.reason, "time_stop")
+
+    def test_time_stop_exits_at_soft_timeout_when_trade_is_fee_positive(self) -> None:
+        strategy = ModerateScalpingStrategy(build_config(mode="paper"))
+        instrument = build_instrument()
+        opened_at = datetime(2026, 6, 15, 10, 15, tzinfo=timezone.utc)
+        position = Position(
+            instrument=instrument,
+            side=Side.BUY,
+            quantity_lots=1,
+            entry_price=Decimal("100"),
+            opened_at=opened_at,
+            take_profit_bps=Decimal("50"),
+            stop_loss_bps=Decimal("50"),
+            time_stop_seconds=8.0,
+            entry_fee_rub=Decimal("0.4"),
+            reason="profile=adaptive",
+            metadata={},
+        )
+
+        snapshot = build_snapshot(
+            instrument,
+            opened_at + timedelta(seconds=8),
+            bid_price="100.20",
+            ask_price="100.21",
+        )
+
+        exit_decision = strategy.evaluate_exit(position, snapshot)
+        assert exit_decision is not None
+        self.assertEqual(exit_decision.reason, "time_stop")
 
 
 if __name__ == "__main__":
