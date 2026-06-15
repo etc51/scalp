@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -62,6 +63,18 @@ class _Services:
         self.market_data = _MarketData(responses)
 
 
+class _HangingMarketData:
+    async def get_order_book(self, *, instrument_id: str, depth: int) -> _OrderBook:
+        assert depth == 1
+        await asyncio.sleep(10)
+        raise AssertionError(f"Unexpected resume for {instrument_id}")
+
+
+class _HangingServices:
+    def __init__(self) -> None:
+        self.market_data = _HangingMarketData()
+
+
 class OrderbookFallbackTests(unittest.IsolatedAsyncioTestCase):
     def test_orderbook_response_to_snapshot_returns_none_without_both_sides(self) -> None:
         instrument = build_instrument()
@@ -109,6 +122,21 @@ class OrderbookFallbackTests(unittest.IsolatedAsyncioTestCase):
         snapshots = [item async for item in poll_orderbooks_once(services, [first, second], depth=1)]
 
         self.assertEqual([item.instrument.ticker for item in snapshots], ["SBER", "GAZP"])
+
+    async def test_poll_orderbooks_once_skips_hanging_rpc(self) -> None:
+        instrument = build_instrument()
+
+        snapshots = [
+            item
+            async for item in poll_orderbooks_once(
+                _HangingServices(),
+                [instrument],
+                depth=1,
+                request_timeout_seconds=0.01,
+            )
+        ]
+
+        self.assertEqual(snapshots, [])
 
     def test_should_run_poll_fallback_respects_interval(self) -> None:
         self.assertTrue(

@@ -11,6 +11,18 @@ from .domain import EntrySignal, ExitDecision, MarketSnapshot, Position, Side
 from .indicators import compute_indicator_state
 from .strategy_overlay import MinuteBar, compute_overlay_indicator_state, evaluate_strategy_overlay
 
+ADAPTIVE_MAX_SPREAD_BPS = Decimal("2.5")
+ADAPTIVE_LATE_SESSION_MAX_SPREAD_BPS = Decimal("2.0")
+ADAPTIVE_MIN_IMBALANCE = Decimal("0.52")
+ADAPTIVE_LATE_SESSION_MIN_IMBALANCE = Decimal("0.55")
+ADAPTIVE_MIN_IMPULSE_BPS = Decimal("1.5")
+ADAPTIVE_LATE_SESSION_MIN_IMPULSE_BPS = Decimal("2.0")
+ADAPTIVE_MIN_EXPECTED_EDGE_BPS = Decimal("6")
+ADAPTIVE_LATE_SESSION_MIN_EXPECTED_EDGE_BPS = Decimal("8")
+ADAPTIVE_COST_HEADROOM_FLOOR_BPS = Decimal("4")
+ADAPTIVE_EDGE_MULTIPLIER = Decimal("2.5")
+ADAPTIVE_LATE_SESSION_START_HOUR = 16
+
 
 @dataclass(slots=True)
 class InstrumentMomentumState:
@@ -62,6 +74,8 @@ class ModerateScalpingStrategy:
             return None, "invalid_oldest_mid", {}
 
         impulse_bps = ((snapshot.mid_price - oldest_mid) / oldest_mid) * Decimal("10000")
+        local_hour = snapshot.at.astimezone(self._config.timezone).hour
+        late_session = local_hour >= ADAPTIVE_LATE_SESSION_START_HOUR
         adaptive_enabled = self._config.mode == "paper"
         adaptive_spread_bps = self._config.max_spread_bps
         adaptive_min_imbalance = self._config.min_imbalance
@@ -72,17 +86,41 @@ class ModerateScalpingStrategy:
         adaptive_time_stop_seconds = self._config.time_stop_seconds
         adaptive_edge_multiplier = Decimal("1.5")
         if adaptive_enabled:
-            adaptive_spread_bps = max(self._config.max_spread_bps, Decimal("1.5")) + Decimal("1.5")
-            adaptive_min_imbalance = max(Decimal("0.40"), self._config.min_imbalance - Decimal("0.10"))
-            adaptive_min_impulse_bps = max(Decimal("0.75"), self._config.min_impulse_bps)
-            adaptive_take_profit_bps = max(
-                self._commission_model.roundtrip_bps + self._config.min_net_take_profit_bps + Decimal("1"),
-                self._config.take_profit_bps - Decimal("2"),
+            # Adaptive stays more active than strict, but it now needs clearer
+            # follow-through instead of fee-burning micro-noise.
+            adaptive_spread_bps = min(
+                self._config.max_spread_bps + Decimal("0.50"),
+                ADAPTIVE_MAX_SPREAD_BPS,
             )
-            adaptive_stop_loss_bps = max(Decimal("4"), self._config.stop_loss_bps - Decimal("2"))
-            adaptive_min_expected_edge_bps = max(Decimal("2"), self._config.min_expected_edge_bps - Decimal("2"))
-            adaptive_edge_multiplier = Decimal("4.0")
+            adaptive_min_imbalance = max(self._config.min_imbalance, ADAPTIVE_MIN_IMBALANCE)
+            adaptive_min_impulse_bps = max(self._config.min_impulse_bps, ADAPTIVE_MIN_IMPULSE_BPS)
+            adaptive_take_profit_bps = self._config.take_profit_bps
+            adaptive_stop_loss_bps = self._config.stop_loss_bps
+            adaptive_min_expected_edge_bps = max(
+                self._config.min_expected_edge_bps,
+                ADAPTIVE_MIN_EXPECTED_EDGE_BPS,
+            )
+            adaptive_edge_multiplier = ADAPTIVE_EDGE_MULTIPLIER
+            if late_session:
+                adaptive_spread_bps = min(
+                    adaptive_spread_bps,
+                    ADAPTIVE_LATE_SESSION_MAX_SPREAD_BPS,
+                )
+                adaptive_min_imbalance = max(
+                    adaptive_min_imbalance,
+                    ADAPTIVE_LATE_SESSION_MIN_IMBALANCE,
+                )
+                adaptive_min_impulse_bps = max(
+                    adaptive_min_impulse_bps,
+                    ADAPTIVE_LATE_SESSION_MIN_IMPULSE_BPS,
+                )
+                adaptive_min_expected_edge_bps = max(
+                    adaptive_min_expected_edge_bps,
+                    ADAPTIVE_LATE_SESSION_MIN_EXPECTED_EDGE_BPS,
+                )
         metrics: dict[str, Decimal | str] = {
+            "local_hour": str(local_hour),
+            "late_session": str(late_session).lower(),
             "spread_bps": snapshot.spread_bps,
             "imbalance": snapshot.imbalance,
             "impulse_bps": impulse_bps,
@@ -191,7 +229,7 @@ class ModerateScalpingStrategy:
         if entry_profile == "adaptive":
             net_take_profit_after_costs_bps = net_take_profit_bps - snapshot.spread_bps
             adaptive_cost_headroom_floor_bps = max(
-                Decimal("2"),
+                ADAPTIVE_COST_HEADROOM_FLOOR_BPS,
                 self._config.target_net_take_profit_buffer_bps,
             )
             metrics["net_take_profit_after_costs_bps"] = net_take_profit_after_costs_bps
@@ -370,24 +408,10 @@ class ModerateScalpingStrategy:
         if mode == "trend_side_aware":
             if signal_side is Side.BUY:
                 if trend_label != "bullish":
-                    if (
-                        self._config.mode == "paper"
-                        and entry_profile == "adaptive"
-                        and trend_label != "bearish"
-                    ):
-                        metrics["regime_filter_profile"] = "adaptive_not_opposite"
-                        return True, "ok", metrics
                     return False, "regime_prev_minute_not_bullish", metrics
                 metrics["regime_filter_profile"] = "strict_side_aware"
                 return True, "ok", metrics
             if trend_label != "bearish":
-                if (
-                    self._config.mode == "paper"
-                    and entry_profile == "adaptive"
-                    and trend_label != "bullish"
-                ):
-                    metrics["regime_filter_profile"] = "adaptive_not_opposite"
-                    return True, "ok", metrics
                 return False, "regime_prev_minute_not_bearish_short", metrics
             metrics["regime_filter_profile"] = "strict_side_aware"
             return True, "ok", metrics

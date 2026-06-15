@@ -23,6 +23,7 @@ from tbank_latency_check.checker import configure_grpc_root_certificates
 
 NANOS_IN_SECOND = Decimal("1000000000")
 LOGGER = logging.getLogger("moex_scalper.tbank")
+POLL_FALLBACK_RPC_TIMEOUT_SECONDS = 3.0
 
 
 def quotation_to_decimal(value: object) -> Decimal:
@@ -196,12 +197,16 @@ async def poll_orderbooks_once(
     instruments: list[InstrumentSpec],
     *,
     depth: int,
+    request_timeout_seconds: float = POLL_FALLBACK_RPC_TIMEOUT_SECONDS,
 ) -> AsyncIterator[MarketSnapshot]:
     for instrument in instruments:
         try:
-            orderbook = await services.market_data.get_order_book(
-                instrument_id=instrument.instrument_id,
-                depth=depth,
+            orderbook = await asyncio.wait_for(
+                services.market_data.get_order_book(
+                    instrument_id=instrument.instrument_id,
+                    depth=depth,
+                ),
+                timeout=request_timeout_seconds,
             )
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning(

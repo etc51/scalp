@@ -113,6 +113,8 @@ def build_strategy_diagnostics(config: ScalperConfig) -> dict[str, Any]:
         "entry_modes": "long+short" if config.allow_short else "long_only",
         "regime_filter_mode": config.regime_filter_mode,
         "strategy_overlay_mode": config.strategy_overlay_mode,
+        "stream_poll_fallback_enabled": config.stream_poll_fallback_enabled,
+        "stream_poll_fallback_interval_seconds": str(config.stream_poll_fallback_interval_seconds),
         "paper_ticker_guard_cooldown_seconds": config.paper_ticker_guard_cooldown_seconds,
         "paper_continue_after_daily_loss_limit": config.paper_continue_after_daily_loss_limit,
         "premium_roundtrip_commission_bps": str(roundtrip_commission_bps),

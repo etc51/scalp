@@ -103,7 +103,9 @@ def build_snapshot(
 
 class AdaptiveStrategyTests(unittest.TestCase):
     def test_paper_mode_uses_adaptive_profile_for_relaxed_spread_with_cost_headroom(self) -> None:
-        strategy = ModerateScalpingStrategy(build_config(mode="paper"))
+        strategy = ModerateScalpingStrategy(
+            replace(build_config(mode="paper"), max_spread_bps=Decimal("1.5"))
+        )
         instrument = build_instrument()
         start = datetime(2026, 6, 15, 10, 15, tzinfo=timezone.utc)
 
@@ -120,8 +122,8 @@ class AdaptiveStrategyTests(unittest.TestCase):
             build_snapshot(
                 instrument,
                 start + timedelta(seconds=2),
-                bid_price="99.996",
-                ask_price="100.024",
+                bid_price="100.008",
+                ask_price="100.028",
             ),
             has_open_position=False,
         )
@@ -129,8 +131,8 @@ class AdaptiveStrategyTests(unittest.TestCase):
         self.assertEqual(reason, "ok")
         assert signal is not None
         self.assertEqual(signal.side, Side.BUY)
-        self.assertEqual(signal.take_profit_bps, Decimal("16"))
-        self.assertEqual(signal.stop_loss_bps, Decimal("8"))
+        self.assertEqual(signal.take_profit_bps, Decimal("18"))
+        self.assertEqual(signal.stop_loss_bps, Decimal("10"))
         self.assertEqual(signal.time_stop_seconds, 8.0)
         self.assertIn("profile=adaptive", signal.reason)
         self.assertIn("net_tp_after_costs_bps=", signal.reason)
@@ -139,11 +141,15 @@ class AdaptiveStrategyTests(unittest.TestCase):
         self.assertEqual(metrics["adaptive_spread_pass"], "true")
         self.assertGreaterEqual(
             Decimal(str(metrics["net_take_profit_after_costs_bps"])),
-            Decimal("2"),
+            Decimal("4"),
         )
 
     def test_paper_mode_blocks_adaptive_when_relaxed_spread_has_too_little_cost_headroom(self) -> None:
-        config = replace(build_config(mode="paper"), take_profit_bps=Decimal("14"))
+        config = replace(
+            build_config(mode="paper"),
+            max_spread_bps=Decimal("2.0"),
+            take_profit_bps=Decimal("14"),
+        )
         strategy = ModerateScalpingStrategy(config)
         instrument = build_instrument()
         start = datetime(2026, 6, 15, 10, 15, tzinfo=timezone.utc)
@@ -161,8 +167,8 @@ class AdaptiveStrategyTests(unittest.TestCase):
             build_snapshot(
                 instrument,
                 start + timedelta(seconds=2),
-                bid_price="100.0085",
-                ask_price="100.0435",
+                bid_price="100.011",
+                ask_price="100.035",
             ),
             has_open_position=False,
         )
@@ -173,7 +179,7 @@ class AdaptiveStrategyTests(unittest.TestCase):
         self.assertEqual(metrics["adaptive_spread_pass"], "true")
         self.assertLess(
             Decimal(str(metrics["net_take_profit_after_costs_bps"])),
-            Decimal("2"),
+            Decimal("4"),
         )
 
     def test_paper_mode_blocks_adaptive_micro_impulse_noise(self) -> None:
@@ -234,7 +240,7 @@ class AdaptiveStrategyTests(unittest.TestCase):
         self.assertEqual(metrics["adaptive_enabled"], "false")
         self.assertEqual(metrics["adaptive_long_impulse_pass"], "false")
 
-    def test_paper_adaptive_regime_allows_neutral_prev_minute_if_not_opposite(self) -> None:
+    def test_paper_adaptive_regime_blocks_neutral_prev_minute(self) -> None:
         config = replace(build_config(mode="paper"), regime_filter_mode="trend_side_aware")
         strategy = ModerateScalpingStrategy(config)
         state = strategy._state_for("instrument-sber")
@@ -262,11 +268,42 @@ class AdaptiveStrategyTests(unittest.TestCase):
             entry_profile="strict",
         )
 
-        self.assertTrue(allowed)
-        self.assertEqual(reason, "ok")
-        self.assertEqual(metrics["regime_filter_profile"], "adaptive_not_opposite")
+        self.assertFalse(allowed)
+        self.assertEqual(reason, "regime_prev_minute_not_bullish")
+        self.assertNotIn("regime_filter_profile", metrics)
         self.assertFalse(strict_allowed)
         self.assertEqual(strict_reason, "regime_prev_minute_not_bullish")
+
+    def test_paper_adaptive_late_session_requires_stronger_impulse(self) -> None:
+        strategy = ModerateScalpingStrategy(
+            replace(build_config(mode="paper"), max_spread_bps=Decimal("1.5"))
+        )
+        instrument = build_instrument()
+        start = datetime(2026, 6, 15, 16, 0, tzinfo=timezone.utc)
+
+        strategy.diagnose_entry(
+            build_snapshot(
+                instrument,
+                start,
+                bid_price="99.99",
+                ask_price="100.01",
+            ),
+            has_open_position=False,
+        )
+        signal, reason, metrics = strategy.diagnose_entry(
+            build_snapshot(
+                instrument,
+                start + timedelta(seconds=2),
+                bid_price="100.006",
+                ask_price="100.026",
+            ),
+            has_open_position=False,
+        )
+
+        self.assertIsNone(signal)
+        self.assertEqual(reason, "impulse_too_small")
+        self.assertEqual(metrics["late_session"], "true")
+        self.assertEqual(metrics["adaptive_long_impulse_pass"], "false")
 
     def test_time_stop_waits_for_fee_break_even_before_forcing_exit(self) -> None:
         strategy = ModerateScalpingStrategy(build_config(mode="paper"))
