@@ -81,7 +81,6 @@ class ModerateScalpingStrategy:
             )
             adaptive_stop_loss_bps = max(Decimal("4"), self._config.stop_loss_bps - Decimal("2"))
             adaptive_min_expected_edge_bps = max(Decimal("2"), self._config.min_expected_edge_bps - Decimal("2"))
-            adaptive_time_stop_seconds = max(3.0, round(self._config.time_stop_seconds * 0.75, 3))
             adaptive_edge_multiplier = Decimal("4.0")
         metrics: dict[str, Decimal | str] = {
             "spread_bps": snapshot.spread_bps,

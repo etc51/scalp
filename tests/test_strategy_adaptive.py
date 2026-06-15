@@ -129,7 +129,7 @@ class AdaptiveStrategyTests(unittest.TestCase):
         self.assertEqual(signal.side, Side.BUY)
         self.assertEqual(signal.take_profit_bps, Decimal("16"))
         self.assertEqual(signal.stop_loss_bps, Decimal("8"))
-        self.assertEqual(signal.time_stop_seconds, 6.0)
+        self.assertEqual(signal.time_stop_seconds, 8.0)
         self.assertIn("profile=adaptive", signal.reason)
         self.assertEqual(metrics["entry_profile"], "adaptive")
         self.assertEqual(metrics["long_impulse_pass"], "false")
