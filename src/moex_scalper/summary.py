@@ -273,11 +273,21 @@ def build_focus(payload: dict[str, Any]) -> list[str]:
         worst_entry_tier = entry_forensics_summary.get("worst_entry_tier")
         best_entry_tier = entry_forensics_summary.get("best_entry_tier")
         worst_edge_bucket = entry_forensics_summary.get("worst_edge_bucket")
-        if worst_entry_tier:
+        actionable_entry_tiers = {
+            item
+            for item in (worst_entry_tier, best_entry_tier)
+            if item not in {None, "", "adaptive", "unknown"}
+        }
+        actionable_edge_bucket = worst_edge_bucket not in {None, "", "missing", "strict_or_missing"}
+        if actionable_entry_tiers or actionable_edge_bucket:
             focus.append(
                 "Friction-aware entry tiers: "
                 f"weakest={worst_entry_tier}, strongest={best_entry_tier or 'n/a'}, "
                 f"worst post-cost bucket={worst_edge_bucket or 'n/a'}."
+            )
+        elif (entry_forensics_summary.get("worst_primary_tag") or None) is not None:
+            focus.append(
+                "Entry-tier analytics уже включены, но текущее окно пока состоит в основном из legacy adaptive sample до нового tier-split."
             )
 
     coverage = optimizer.get("signal_coverage") or {}
