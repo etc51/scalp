@@ -474,9 +474,13 @@ python3 -m moex_scalper govern --apply --write-report
 
 - обновляет свежие `analysis`, `optimizer` и `research`
 - строит preview для `tune` и `restrict`
-- если оба кандидата готовы, применяет их в одном проходе
+- если готовы несколько кандидатов, выбирает только один nightly change
+- приоритет у governor такой:
+  - сначала global unblockers из `tuning` вроде `headroom_guard` или `coverage_unblocker`
+  - затем более узкие `restrictions`
+  - затем остальные tuning-candidates
 - пишет единый отчет в `runtime/governance/latest.json`
-- требует только один рестарт `paper`-сервиса даже если применились и параметры стратегии, и entry-restrictions
+- требует не более одного nightly рестарта `paper`-сервиса
 
 На сервере это можно запускать и вручную, и автоматически:
 
@@ -488,6 +492,7 @@ python3 -m moex_scalper govern --apply --write-report
 
 - `moex-scalper-tune.service` и `moex-scalper-restrict.service` остаются для ручного запуска и отладки
 - installer теперь включает nightly `govern` timer и отключает отдельные nightly timers для `tune` и `restrict`, чтобы убрать двойные рестарты
+- в `governance`-отчете и на dashboard видно `selected_action`, `deferred_actions` и `selection_reason`
 
 ## Entry Restrictions
 

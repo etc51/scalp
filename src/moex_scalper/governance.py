@@ -67,13 +67,19 @@ def run_governor(
 
     tuning_ready = tuning_preview.get("decision") == "ready_to_apply"
     restrictions_ready = restrictions_preview.get("decision") == "ready_to_apply"
+    selected_action, selection_reason = choose_governor_action(
+        tuning_preview=tuning_preview,
+        tuning_ready=tuning_ready,
+        restrictions_preview=restrictions_preview,
+        restrictions_ready=restrictions_ready,
+    )
 
     tuning_result = tuning_preview
     restrictions_result = restrictions_preview
     tuning_applied = False
     restrictions_applied = False
 
-    if apply and tuning_ready:
+    if apply and selected_action == "tuning":
         tuning_result = tune_parameters(
             config,
             apply=True,
@@ -82,7 +88,7 @@ def run_governor(
         )
         tuning_applied = bool(tuning_result.get("applied"))
 
-    if apply and restrictions_ready:
+    if apply and selected_action == "restrictions":
         restrictions_result = build_restrictions(
             config,
             apply=True,
@@ -96,6 +102,11 @@ def run_governor(
         ready_actions.append("tuning")
     if restrictions_ready:
         ready_actions.append("restrictions")
+    deferred_actions = [
+        action
+        for action in ready_actions
+        if action != selected_action
+    ]
 
     payload = {
         "status": "ok",
@@ -103,12 +114,15 @@ def run_governor(
         "mode": config.mode,
         "apply_requested": apply,
         "applied": applied_any,
+        "selected_action": selected_action,
+        "selection_reason": selection_reason,
         "decision": build_decision(
             apply=apply,
             applied_any=applied_any,
             ready_actions=ready_actions,
         ),
         "ready_actions": ready_actions,
+        "deferred_actions": deferred_actions,
         "applied_actions": [
             action
             for action, applied_flag in (
@@ -179,6 +193,39 @@ def build_next_action(
     if restrictions_next not in {"no_change", "no_restrictions_needed"}:
         return restrictions_next
     return "no_change"
+
+
+def choose_governor_action(
+    *,
+    tuning_preview: dict[str, Any],
+    tuning_ready: bool,
+    restrictions_preview: dict[str, Any],
+    restrictions_ready: bool,
+) -> tuple[str | None, str]:
+    if not tuning_ready and not restrictions_ready:
+        return None, "no_ready_actions"
+
+    tuning_sources = {
+        part.strip()
+        for part in str(tuning_preview.get("candidate_source") or "").split("+")
+        if part.strip()
+    }
+    tuning_diagnostics = dict(tuning_preview.get("strategy_diagnostics") or {})
+    if tuning_ready and (
+        not tuning_diagnostics.get("viable_for_entry", True)
+        or "headroom_guard" in tuning_sources
+        or "optimizer_headroom_guard" in tuning_sources
+        or "coverage_unblocker" in tuning_sources
+    ):
+        return "tuning", "tuning_unblocks_global_config"
+
+    if restrictions_ready:
+        return "restrictions", "prefer_narrow_restrictions_first"
+
+    if tuning_ready:
+        return "tuning", "fallback_to_tuning"
+
+    return None, "no_ready_actions"
 
 
 def write_governance_report(runtime_dir: Path, payload: dict[str, Any]) -> None:
