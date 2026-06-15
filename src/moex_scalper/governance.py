@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -27,6 +27,7 @@ def run_governor(
     optimizer_min_trades = int(_env_value("SCALPER_OPTIMIZER_MIN_TRADES", "5"))
     research_days = int(_env_value("SCALPER_RESEARCH_DAYS", "5"))
     research_top = int(_env_value("SCALPER_RESEARCH_TOP", "5"))
+    state_payload = _load_json(config.runtime_dir / "dashboard_state.json")
 
     analysis_payload = analyze_trades(
         config,
@@ -65,6 +66,17 @@ def run_governor(
         apply=False,
         write_report=False,
     )
+    evidence = build_evidence_snapshot(
+        state_payload=state_payload,
+        analysis_payload=analysis_payload,
+        optimizer_payload=optimizer_payload,
+        research_payload=research_payload,
+    )
+    last_applied_change = load_last_applied_governance_change(config.runtime_dir)
+    post_change_guard = build_post_change_guard(
+        evidence=evidence,
+        last_applied=last_applied_change,
+    )
 
     tuning_ready = tuning_preview.get("decision") == "ready_to_apply"
     restrictions_ready = restrictions_preview.get("decision") == "ready_to_apply"
@@ -73,6 +85,7 @@ def run_governor(
         tuning_ready=tuning_ready,
         restrictions_preview=restrictions_preview,
         restrictions_ready=restrictions_ready,
+        post_change_guard=post_change_guard,
     )
 
     tuning_result = tuning_preview
@@ -98,11 +111,21 @@ def run_governor(
         restrictions_applied = bool(restrictions_result.get("applied"))
 
     applied_any = tuning_applied or restrictions_applied
-    ready_actions = []
+    candidate_actions = []
     if tuning_ready:
-        ready_actions.append("tuning")
+        candidate_actions.append("tuning")
     if restrictions_ready:
-        ready_actions.append("restrictions")
+        candidate_actions.append("restrictions")
+    ready_actions = [
+        action
+        for action, details in action_scores.items()
+        if details.get("effective_ready", False)
+    ]
+    blocked_ready_actions = [
+        action
+        for action, details in action_scores.items()
+        if details.get("ready") and not details.get("effective_ready", False)
+    ]
     deferred_actions = [
         action
         for action in ready_actions
@@ -115,6 +138,8 @@ def run_governor(
         "mode": config.mode,
         "apply_requested": apply,
         "applied": applied_any,
+        "evidence": evidence,
+        "post_change_guard": post_change_guard,
         "action_scores": action_scores,
         "selected_action": selected_action,
         "selection_reason": selection_reason,
@@ -122,8 +147,11 @@ def run_governor(
             apply=apply,
             applied_any=applied_any,
             ready_actions=ready_actions,
+            blocked_ready_actions=blocked_ready_actions,
         ),
+        "candidate_actions": candidate_actions,
         "ready_actions": ready_actions,
+        "blocked_ready_actions": blocked_ready_actions,
         "deferred_actions": deferred_actions,
         "applied_actions": [
             action
@@ -158,6 +186,7 @@ def run_governor(
             tuning_ready=tuning_ready,
             restrictions=restrictions_result,
             restrictions_ready=restrictions_ready,
+            post_change_guard=post_change_guard,
         ),
     }
     if write_report or applied_any:
@@ -165,9 +194,17 @@ def run_governor(
     return payload
 
 
-def build_decision(*, apply: bool, applied_any: bool, ready_actions: list[str]) -> str:
+def build_decision(
+    *,
+    apply: bool,
+    applied_any: bool,
+    ready_actions: list[str],
+    blocked_ready_actions: list[str],
+) -> str:
     if applied_any:
         return "applied"
+    if blocked_ready_actions:
+        return "guard_wait"
     if apply and not ready_actions:
         return "skipped"
     if not apply and ready_actions:
@@ -183,9 +220,12 @@ def build_next_action(
     tuning_ready: bool,
     restrictions: dict[str, Any],
     restrictions_ready: bool,
+    post_change_guard: dict[str, Any],
 ) -> str:
     if applied_any:
         return "restart_paper_service"
+    if post_change_guard.get("active"):
+        return "collect_post_change_sample"
     if not apply and (tuning_ready or restrictions_ready):
         return "governance_candidate_ready"
     tuning_next = str(tuning.get("next_action") or "no_change")
@@ -203,12 +243,14 @@ def choose_governor_action(
     tuning_ready: bool,
     restrictions_preview: dict[str, Any],
     restrictions_ready: bool,
+    post_change_guard: dict[str, Any],
 ) -> tuple[str | None, str, dict[str, Any]]:
     action_scores = build_action_scores(
         tuning_preview=tuning_preview,
         tuning_ready=tuning_ready,
         restrictions_preview=restrictions_preview,
         restrictions_ready=restrictions_ready,
+        post_change_guard=post_change_guard,
     )
     if not tuning_ready and not restrictions_ready:
         return None, "no_ready_actions", action_scores
@@ -216,8 +258,10 @@ def choose_governor_action(
     ready_items = [
         (action, details)
         for action, details in action_scores.items()
-        if details.get("ready")
+        if details.get("effective_ready")
     ]
+    if not ready_items and post_change_guard.get("active"):
+        return None, str(post_change_guard.get("reason") or "post_change_guard_active"), action_scores
     ranked = sorted(
         ready_items,
         key=lambda item: (
@@ -245,16 +289,33 @@ def build_action_scores(
     tuning_ready: bool,
     restrictions_preview: dict[str, Any],
     restrictions_ready: bool,
+    post_change_guard: dict[str, Any],
 ) -> dict[str, Any]:
     return {
-        "tuning": score_tuning_action(tuning_preview, ready=tuning_ready),
-        "restrictions": score_restrictions_action(restrictions_preview, ready=restrictions_ready),
+        "tuning": score_tuning_action(
+            tuning_preview,
+            ready=tuning_ready,
+            post_change_guard=post_change_guard,
+        ),
+        "restrictions": score_restrictions_action(
+            restrictions_preview,
+            ready=restrictions_ready,
+            post_change_guard=post_change_guard,
+        ),
     }
 
 
-def score_tuning_action(payload: dict[str, Any], *, ready: bool) -> dict[str, Any]:
+def score_tuning_action(
+    payload: dict[str, Any],
+    *,
+    ready: bool,
+    post_change_guard: dict[str, Any],
+) -> dict[str, Any]:
     details: dict[str, Any] = {
         "ready": ready,
+        "effective_ready": ready,
+        "guard_blocked": False,
+        "guard_reason": None,
         "score": 0.0,
         "selection_reason": None,
         "score_components": [],
@@ -263,6 +324,16 @@ def score_tuning_action(payload: dict[str, Any], *, ready: bool) -> dict[str, An
     }
     if not ready:
         details["selection_reason"] = "not_ready"
+        return details
+    if post_change_guard.get("active"):
+        details["effective_ready"] = False
+        details["guard_blocked"] = True
+        details["guard_reason"] = str(post_change_guard.get("reason") or "await_post_change_sample")
+        details["selection_reason"] = "await_post_change_sample"
+        details["score_components"].append(
+            "post_change_guard="
+            + str(post_change_guard.get("reason") or "await_post_change_sample")
+        )
         return details
 
     score = Decimal("0")
@@ -319,9 +390,17 @@ def score_tuning_action(payload: dict[str, Any], *, ready: bool) -> dict[str, An
     return details
 
 
-def score_restrictions_action(payload: dict[str, Any], *, ready: bool) -> dict[str, Any]:
+def score_restrictions_action(
+    payload: dict[str, Any],
+    *,
+    ready: bool,
+    post_change_guard: dict[str, Any],
+) -> dict[str, Any]:
     details: dict[str, Any] = {
         "ready": ready,
+        "effective_ready": ready,
+        "guard_blocked": False,
+        "guard_reason": None,
         "score": 0.0,
         "selection_reason": None,
         "score_components": [],
@@ -330,6 +409,16 @@ def score_restrictions_action(payload: dict[str, Any], *, ready: bool) -> dict[s
     }
     if not ready:
         details["selection_reason"] = "not_ready"
+        return details
+    if post_change_guard.get("active"):
+        details["effective_ready"] = False
+        details["guard_blocked"] = True
+        details["guard_reason"] = str(post_change_guard.get("reason") or "await_post_change_sample")
+        details["selection_reason"] = "await_post_change_sample"
+        details["score_components"].append(
+            "post_change_guard="
+            + str(post_change_guard.get("reason") or "await_post_change_sample")
+        )
         return details
 
     score = Decimal("0")
@@ -383,6 +472,173 @@ def score_restrictions_action(payload: dict[str, Any], *, ready: bool) -> dict[s
     return details
 
 
+def build_evidence_snapshot(
+    *,
+    state_payload: dict[str, Any] | None,
+    analysis_payload: dict[str, Any] | None,
+    optimizer_payload: dict[str, Any] | None,
+    research_payload: dict[str, Any] | None,
+) -> dict[str, Any]:
+    stats = ((state_payload or {}).get("stats") or {})
+    today_stats = stats.get("today") or {}
+    overall_stats = stats.get("overall") or {}
+    market_history = (state_payload or {}).get("market_history") or {}
+    analysis_summary = ((analysis_payload or {}).get("summary") or {})
+    return {
+        "overall_trade_count": _int(overall_stats.get("trade_count")),
+        "today_trade_count": _int(today_stats.get("trade_count")),
+        "recorded_snapshots_total": _int(market_history.get("recorded_snapshots_total")),
+        "recorded_snapshots_today": _int(market_history.get("recorded_snapshots_today")),
+        "analysis_trade_count_window": _int(analysis_summary.get("trade_count")),
+        "optimizer_snapshot_count_window": _int((optimizer_payload or {}).get("snapshot_count")),
+        "optimizer_raw_snapshot_count_window": _int((optimizer_payload or {}).get("raw_snapshot_count")),
+        "research_snapshot_count_window": _int((research_payload or {}).get("snapshot_count")),
+    }
+
+
+def load_last_applied_governance_change(runtime_dir: Path) -> dict[str, Any] | None:
+    history_path = runtime_dir / "governance" / "history.jsonl"
+    if not history_path.exists():
+        return None
+    try:
+        lines = history_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for raw_line in reversed(lines):
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if payload.get("applied") and list(payload.get("applied_actions") or []):
+            return payload
+    return None
+
+
+def build_post_change_guard(
+    *,
+    evidence: dict[str, Any],
+    last_applied: dict[str, Any] | None,
+) -> dict[str, Any]:
+    min_new_trades = int(_env_value("SCALPER_GOVERNOR_MIN_NEW_TRADES_AFTER_CHANGE", "6") or 6)
+    min_new_snapshots = int(_env_value("SCALPER_GOVERNOR_MIN_NEW_SNAPSHOTS_AFTER_CHANGE", "500") or 500)
+    payload: dict[str, Any] = {
+        "active": False,
+        "reason": None,
+        "last_applied_at": None,
+        "last_applied_actions": [],
+        "age_hours": None,
+        "min_new_trades": min_new_trades,
+        "min_new_snapshots": min_new_snapshots,
+        "current_trade_count": None,
+        "last_trade_count": None,
+        "trade_delta": None,
+        "enough_trade_growth": False,
+        "current_snapshot_count": None,
+        "last_snapshot_count": None,
+        "snapshot_delta": None,
+        "enough_snapshot_growth": False,
+        "comparable": False,
+    }
+    if last_applied is None:
+        payload["reason"] = "no_prior_applied_change"
+        return payload
+
+    payload["last_applied_at"] = last_applied.get("generated_at")
+    payload["last_applied_actions"] = list(last_applied.get("applied_actions") or [])
+    payload["age_hours"] = _age_hours(last_applied.get("generated_at"))
+
+    last_evidence = extract_evidence_snapshot(last_applied)
+    current_trade_count = _coalesce_int(
+        evidence.get("overall_trade_count"),
+        evidence.get("analysis_trade_count_window"),
+    )
+    last_trade_count = _coalesce_int(
+        last_evidence.get("overall_trade_count"),
+        last_evidence.get("analysis_trade_count_window"),
+    )
+    current_snapshot_count = _coalesce_int(
+        evidence.get("recorded_snapshots_total"),
+        evidence.get("optimizer_snapshot_count_window"),
+        evidence.get("research_snapshot_count_window"),
+    )
+    last_snapshot_count = _coalesce_int(
+        last_evidence.get("recorded_snapshots_total"),
+        last_evidence.get("optimizer_snapshot_count_window"),
+        last_evidence.get("research_snapshot_count_window"),
+    )
+
+    payload["current_trade_count"] = current_trade_count
+    payload["last_trade_count"] = last_trade_count
+    payload["current_snapshot_count"] = current_snapshot_count
+    payload["last_snapshot_count"] = last_snapshot_count
+
+    if current_trade_count is not None and last_trade_count is not None:
+        trade_delta = current_trade_count - last_trade_count
+        payload["trade_delta"] = trade_delta
+        payload["enough_trade_growth"] = trade_delta >= min_new_trades
+    if current_snapshot_count is not None and last_snapshot_count is not None:
+        snapshot_delta = current_snapshot_count - last_snapshot_count
+        payload["snapshot_delta"] = snapshot_delta
+        payload["enough_snapshot_growth"] = snapshot_delta >= min_new_snapshots
+
+    payload["comparable"] = (
+        payload["trade_delta"] is not None
+        or payload["snapshot_delta"] is not None
+    )
+    if not payload["comparable"]:
+        payload["reason"] = "no_prior_evidence_available"
+        return payload
+    if payload["enough_trade_growth"] or payload["enough_snapshot_growth"]:
+        payload["reason"] = "fresh_sample_available"
+        return payload
+
+    payload["active"] = True
+    payload["reason"] = "await_post_change_sample"
+    return payload
+
+
+def extract_evidence_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
+    tuning = ((payload.get("tuning") or {}).get("result") or {})
+    restrictions = ((payload.get("restrictions") or {}).get("result") or {})
+    evidence = dict(payload.get("evidence") or {})
+    tuning_analysis = dict(tuning.get("analysis") or {})
+    restrictions_analysis = dict(restrictions.get("analysis") or {})
+    tuning_coverage = dict(tuning.get("coverage_fallback") or {})
+    restrictions_optimizer = dict(restrictions.get("optimizer") or {})
+    research = dict(tuning.get("research") or {})
+    return {
+        "overall_trade_count": _coalesce_int(
+            evidence.get("overall_trade_count"),
+            tuning_analysis.get("trade_count"),
+            restrictions_analysis.get("trade_count"),
+        ),
+        "analysis_trade_count_window": _coalesce_int(
+            evidence.get("analysis_trade_count_window"),
+            tuning_analysis.get("trade_count"),
+            restrictions_analysis.get("trade_count"),
+        ),
+        "recorded_snapshots_total": _coalesce_int(
+            evidence.get("recorded_snapshots_total"),
+            evidence.get("optimizer_snapshot_count_window"),
+            restrictions_optimizer.get("snapshot_count"),
+            tuning_coverage.get("snapshot_count"),
+            research.get("snapshot_count"),
+        ),
+        "optimizer_snapshot_count_window": _coalesce_int(
+            evidence.get("optimizer_snapshot_count_window"),
+            restrictions_optimizer.get("snapshot_count"),
+            tuning_coverage.get("snapshot_count"),
+        ),
+        "research_snapshot_count_window": _coalesce_int(
+            evidence.get("research_snapshot_count_window"),
+            research.get("snapshot_count"),
+        ),
+    }
+
+
 def write_governance_report(runtime_dir: Path, payload: dict[str, Any]) -> None:
     governance_dir = runtime_dir / "governance"
     governance_dir.mkdir(parents=True, exist_ok=True)
@@ -398,6 +654,15 @@ def _env_value(key: str, default: str | None = None) -> str | None:
     return __import__("os").getenv(key, default)
 
 
+def _load_json(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+
+
 def _decimal(value: Any, default: str = "0") -> Decimal:
     if value is None or value == "":
         return Decimal(default)
@@ -406,3 +671,33 @@ def _decimal(value: Any, default: str = "0") -> Decimal:
 
 def _fmt_decimal(value: Decimal) -> str:
     return str(value.quantize(Decimal("0.001")))
+
+
+def _int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    return int(value)
+
+
+def _coalesce_int(*values: Any) -> int | None:
+    for value in values:
+        parsed = _int(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _age_hours(value: Any) -> float | None:
+    if not value:
+        return None
+    timestamp = str(value).strip()
+    if not timestamp:
+        return None
+    try:
+        parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    delta = datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)
+    return round(delta.total_seconds() / 3600, 3)

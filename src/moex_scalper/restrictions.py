@@ -154,6 +154,8 @@ def build_restrictions(
         "decision": build_decision(apply=apply, applied=applied, reasons=reasons),
         "reasons": reasons,
         "open_positions": open_positions,
+        "current_signature": current_signature,
+        "proposed_signature": proposed_signature,
         "analysis": {
             "status": (analysis_payload or {}).get("status"),
             "assessment": (analysis_payload or {}).get("assessment"),

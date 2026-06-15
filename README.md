@@ -482,6 +482,8 @@ python3 -m moex_scalper govern --apply --write-report
   - затем более узкие `restrictions`
   - затем остальные tuning-candidates
 - внутри этих правил governor еще считает явный score для `tuning` и `restrictions` по силе evidence, ожидаемой пользе и ширине изменения
+- после любого apply governor теперь ждет новый post-change sample и не наслаивает следующую автоправку на тот же самый набор evidence
+- для снятия этого guard нужен либо прирост закрытых paper-сделок, либо новый in-window market sample; текущее состояние guard видно в `governance`-отчете и на dashboard
 - пишет единый отчет в `runtime/governance/latest.json`
 - требует не более одного nightly рестарта `paper`-сервиса
 

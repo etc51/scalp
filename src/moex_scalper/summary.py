@@ -106,6 +106,8 @@ def build_daily_summary(
             "applied": (governance or {}).get("applied"),
             "applied_actions": list((governance or {}).get("applied_actions") or []),
             "ready_actions": list((governance or {}).get("ready_actions") or []),
+            "blocked_ready_actions": list((governance or {}).get("blocked_ready_actions") or []),
+            "post_change_guard": (governance or {}).get("post_change_guard"),
             "service_restart_required": (governance or {}).get("service_restart_required"),
         },
         "watchdog": {
@@ -144,6 +146,10 @@ def build_focus(payload: dict[str, Any]) -> list[str]:
             "Nightly governor применил: "
             + ", ".join(str(item) for item in governance.get("applied_actions") or [])
             + "."
+        )
+    elif (governance.get("post_change_guard") or {}).get("active"):
+        focus.append(
+            "Nightly governor ждет новый sample после последнего apply и пока не наслаивает следующую автоправку."
         )
     if not strategy_diagnostics.get("viable_for_entry", True):
         warnings = set(str(item) for item in strategy_diagnostics.get("warnings") or [])
@@ -206,6 +212,8 @@ def build_headline(payload: dict[str, Any]) -> str:
         return "Doctor не подтвердил готовность API или watchlist; перед сессией нужен ручной разбор."
     if governance.get("applied"):
         return "Nightly governor применил изменения и ожидает один рестарт paper-сервиса."
+    if (governance.get("post_change_guard") or {}).get("active"):
+        return "Nightly governor ждет новый post-change sample перед следующей авто-правкой."
     if not strategy_diagnostics.get("viable_for_entry", True):
         warnings = set(str(item) for item in strategy_diagnostics.get("warnings") or [])
         if "min_expected_edge_above_take_profit" in warnings:
