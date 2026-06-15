@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from .config import ScalperConfig, parse_bool
+from .market_history import load_snapshots_from_paths
+from .optimizer import filter_snapshots_for_entry_window, resolve_snapshot_files, simulate_candidate
 
 
 @dataclass(slots=True, frozen=True)
@@ -94,6 +96,7 @@ def build_restrictions(
     hour_candidates: list[dict[str, Any]] = []
     ticker_hour_candidates: list[dict[str, Any]] = []
     candidate_source: str | None = None
+    replay_evaluation: dict[str, Any] | None = None
     if not reasons and not analysis_reasons and analysis_payload is not None:
         ticker_hour_candidates = select_negative_buckets(
             ((analysis_payload.get("by_ticker_hour") or {}).get("worst") or []),
@@ -115,6 +118,37 @@ def build_restrictions(
                     min_bucket_trades=min_bucket_trades,
                     min_loss_rub=min_loss_rub,
                 )[:max(0, max_hours)]
+        replay_evaluation = evaluate_analysis_candidates(
+            config,
+            analysis_payload=analysis_payload,
+            current_active=current_active,
+            ticker_hour_candidates=ticker_hour_candidates,
+            ticker_candidates=ticker_candidates,
+            hour_candidates=hour_candidates,
+        )
+        selected_restrictions = deserialize_restrictions_payload(
+            (replay_evaluation or {}).get("selected_restrictions")
+        )
+        selected_source = (replay_evaluation or {}).get("selected_source")
+        if selected_restrictions is not None and selected_source:
+            candidate_source = str(selected_source)
+            ticker_hour_candidates = filter_candidates_for_keys(
+                ticker_hour_candidates,
+                selected_restrictions.blocked_ticker_hours,
+            )
+            ticker_candidates = filter_candidates_for_keys(
+                ticker_candidates,
+                selected_restrictions.disabled_tickers,
+            )
+            hour_candidates = filter_candidates_for_hours(
+                hour_candidates,
+                selected_restrictions.blocked_entry_hours,
+            )
+        elif (replay_evaluation or {}).get("status") == "ok":
+            ticker_hour_candidates = []
+            ticker_candidates = []
+            hour_candidates = []
+            candidate_source = "analysis_replay_no_positive_candidate"
     elif not reasons and not coverage_reasons and optimizer_payload is not None:
         candidate_source = "optimizer_signal_coverage"
         ticker_candidates = select_coverage_buckets(
@@ -162,7 +196,7 @@ def build_restrictions(
     if not reasons and not has_proposed_restrictions and not has_current_restrictions:
         reasons.append(
             "no_negative_buckets"
-            if candidate_source in {"analysis", "analysis_ticker_hour"}
+            if str(candidate_source or "").startswith("analysis")
             else "no_coverage_outliers"
         )
     if not reasons and current_signature == proposed_signature:
@@ -204,6 +238,7 @@ def build_restrictions(
             "min_dominant_block_share_pct": str(coverage_min_dominant_block_share_pct),
             "allowed_block_reasons": list(coverage_allowed_reasons),
         },
+        "replay_evaluation": replay_evaluation,
         "current_active": serialize_restrictions(current_active),
         "proposed_restrictions": serialize_restrictions(proposed),
         "active_restrictions": serialize_restrictions(active_after),
@@ -337,6 +372,247 @@ def select_coverage_buckets(
         candidate["dominant_block_share_pct"] = str(dominant_share_pct.quantize(Decimal("0.01")))
         selected.append(candidate)
     return selected
+
+
+def evaluate_analysis_candidates(
+    config: ScalperConfig,
+    *,
+    analysis_payload: dict[str, Any],
+    current_active: EntryRestrictions,
+    ticker_hour_candidates: list[dict[str, Any]],
+    ticker_candidates: list[dict[str, Any]],
+    hour_candidates: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    window = dict(analysis_payload.get("window") or {})
+    days_requested = int(window.get("days_requested", 1) or 1)
+    end_date = str(window.get("end_date") or "").strip()
+    if not end_date:
+        return {"status": "missing_window"}
+    snapshot_files = resolve_snapshot_files(
+        config,
+        date_key=end_date,
+        input_path=None,
+        days=days_requested,
+    )
+    raw_snapshots = load_snapshots_from_paths(snapshot_files)
+    if not raw_snapshots:
+        return {
+            "status": "no_snapshot_data",
+            "snapshot_files": [str(path) for path in snapshot_files],
+        }
+    snapshots, entry_window_summary = filter_snapshots_for_entry_window(config, raw_snapshots)
+    if not snapshots:
+        return {
+            "status": "no_entry_window_data",
+            "snapshot_files": [str(path) for path in snapshot_files],
+            "entry_window_summary": entry_window_summary,
+        }
+
+    baseline_result = simulate_candidate(
+        config,
+        snapshots,
+        entry_filter=build_restriction_entry_filter(config, current_active),
+    )
+    candidates: list[dict[str, Any]] = []
+
+    for size in range(1, len(ticker_hour_candidates) + 1):
+        restrictions = EntryRestrictions(
+            blocked_ticker_hours=tuple(
+                _normalize_ticker_hour_key(str(item["key"]))
+                for item in ticker_hour_candidates[:size]
+            ),
+            source="analysis_ticker_hour",
+        )
+        candidates.append(
+            evaluate_restriction_candidate(
+                config,
+                snapshots,
+                baseline_result=baseline_result,
+                restrictions=restrictions,
+                family="ticker_hour",
+            )
+        )
+
+    for size in range(1, len(ticker_candidates) + 1):
+        restrictions = EntryRestrictions(
+            disabled_tickers=tuple(str(item["key"]).upper() for item in ticker_candidates[:size]),
+            source="analysis_ticker",
+        )
+        candidates.append(
+            evaluate_restriction_candidate(
+                config,
+                snapshots,
+                baseline_result=baseline_result,
+                restrictions=restrictions,
+                family="ticker",
+            )
+        )
+
+    for size in range(1, len(hour_candidates) + 1):
+        restrictions = EntryRestrictions(
+            blocked_entry_hours=tuple(_hour_key_to_int(str(item["key"])) for item in hour_candidates[:size]),
+            source="analysis_hour",
+        )
+        candidates.append(
+            evaluate_restriction_candidate(
+                config,
+                snapshots,
+                baseline_result=baseline_result,
+                restrictions=restrictions,
+                family="hour",
+            )
+        )
+
+    selected = choose_best_restriction_candidate(candidates)
+    return {
+        "status": "ok",
+        "snapshot_files": [str(path) for path in snapshot_files],
+        "raw_snapshot_count": len(raw_snapshots),
+        "snapshot_count": len(snapshots),
+        "entry_window_summary": entry_window_summary,
+        "baseline": summarize_replay_result(baseline_result),
+        "candidates": candidates,
+        "selected_source": (selected or {}).get("selected_source"),
+        "selected_restrictions": (selected or {}).get("selected_restrictions"),
+        "selected_result": (selected or {}).get("result"),
+        "selected_delta_net_pnl_rub": (selected or {}).get("delta_net_pnl_rub"),
+        "selected_delta_drawdown_rub": (selected or {}).get("delta_drawdown_rub"),
+    }
+
+
+def evaluate_restriction_candidate(
+    config: ScalperConfig,
+    snapshots: list[Any],
+    *,
+    baseline_result: dict[str, Any],
+    restrictions: EntryRestrictions,
+    family: str,
+) -> dict[str, Any]:
+    result = simulate_candidate(
+        config,
+        snapshots,
+        entry_filter=build_restriction_entry_filter(config, restrictions),
+    )
+    baseline_net = Decimal(str(baseline_result.get("net_pnl_rub", "0")))
+    baseline_drawdown = Decimal(str(baseline_result.get("max_drawdown_rub", "0")))
+    result_net = Decimal(str(result.get("net_pnl_rub", "0")))
+    result_drawdown = Decimal(str(result.get("max_drawdown_rub", "0")))
+    delta_net = result_net - baseline_net
+    delta_drawdown = baseline_drawdown - result_drawdown
+    eligible = delta_net > 0 or (delta_net == 0 and delta_drawdown > 0)
+    return {
+        "family": family,
+        "selected_source": f"analysis_{family}_replay",
+        "selected_restrictions": serialize_restrictions(restrictions),
+        "result": summarize_replay_result(result),
+        "delta_net_pnl_rub": str(delta_net),
+        "delta_drawdown_rub": str(delta_drawdown),
+        "eligible": eligible,
+        "scope_units": restriction_scope_units(restrictions),
+    }
+
+
+def choose_best_restriction_candidate(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
+    eligible = [item for item in candidates if item.get("eligible")]
+    if not eligible:
+        return None
+    return sorted(
+        eligible,
+        key=lambda item: (
+            Decimal(str(item.get("delta_net_pnl_rub", "0"))),
+            Decimal(str(item.get("delta_drawdown_rub", "0"))),
+            -int(item.get("scope_units", 0)),
+        ),
+        reverse=True,
+    )[0]
+
+
+def summarize_replay_result(result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "trade_count": result.get("trade_count"),
+        "win_rate_pct": result.get("win_rate_pct"),
+        "net_pnl_rub": result.get("net_pnl_rub"),
+        "fees_rub": result.get("fees_rub"),
+        "max_drawdown_rub": result.get("max_drawdown_rub"),
+        "blocked_top": result.get("blocked_top"),
+    }
+
+
+def restriction_scope_units(restrictions: EntryRestrictions) -> int:
+    return (
+        len(restrictions.blocked_ticker_hours)
+        + (len(restrictions.disabled_tickers) * 2)
+        + (len(restrictions.blocked_entry_hours) * 2)
+    )
+
+
+def build_restriction_entry_filter(
+    config: ScalperConfig,
+    restrictions: EntryRestrictions,
+):
+    if not (
+        restrictions.disabled_tickers
+        or restrictions.blocked_entry_hours
+        or restrictions.blocked_ticker_hours
+    ):
+        return None
+
+    def entry_filter(snapshot: Any, signal: Any) -> tuple[bool, str | None]:
+        local_hour = snapshot.at.astimezone(config.timezone).hour
+        reason = restriction_reason(
+            restrictions,
+            ticker=snapshot.instrument.ticker,
+            local_hour=local_hour,
+        )
+        if reason is not None:
+            return False, reason
+        return True, None
+
+    return entry_filter
+
+
+def deserialize_restrictions_payload(payload: dict[str, Any] | None) -> EntryRestrictions | None:
+    if not payload:
+        return None
+    return EntryRestrictions(
+        disabled_tickers=tuple(
+            str(item).upper()
+            for item in list(payload.get("disabled_tickers", []))
+            if str(item).strip()
+        ),
+        blocked_entry_hours=tuple(
+            int(item)
+            for item in list(payload.get("blocked_entry_hours", []))
+            if str(item).strip()
+        ),
+        blocked_ticker_hours=tuple(
+            _normalize_ticker_hour_key(str(item))
+            for item in list(payload.get("blocked_ticker_hours", []))
+            if str(item).strip()
+        ),
+        updated_at=str(payload.get("updated_at")) if payload.get("updated_at") else None,
+        source=str(payload.get("source")) if payload.get("source") else None,
+    )
+
+
+def filter_candidates_for_keys(
+    items: list[dict[str, Any]],
+    keys: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    selected_keys = {str(item).upper() for item in keys}
+    return [item for item in items if str(item.get("key", "")).upper() in selected_keys]
+
+
+def filter_candidates_for_hours(
+    items: list[dict[str, Any]],
+    hours: tuple[int, ...],
+) -> list[dict[str, Any]]:
+    selected_hours = set(hours)
+    return [
+        item
+        for item in items
+        if _hour_key_to_int(str(item.get("key", "0:00"))) in selected_hours
+    ]
 
 
 def write_restrictions_report(runtime_dir: Path, payload: dict[str, Any], *, applied: bool) -> None:

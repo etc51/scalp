@@ -579,6 +579,7 @@ HTML = """<!doctype html>
       const proposedTickers = proposed.disabled_tickers || [];
       const proposedHours = proposed.blocked_entry_hours || [];
       const proposedTickerHours = proposed.blocked_ticker_hours || [];
+      const replay = restrictions?.replay_evaluation || null;
       if (!restrictions && !activeTickers.length && !activeHours.length && !activeTickerHours.length) {
         return '<div class="empty">Пока нет restrictions-report</div>';
       }
@@ -603,6 +604,10 @@ HTML = """<!doctype html>
           ["Analysis Assessment", restrictions?.analysis?.assessment || "—"],
           ["Optimizer Status", restrictions?.optimizer?.status || "—"],
           ["Coverage Max Ready", restrictions?.coverage_fallback?.max_ready_rate_pct || "—"],
+          ["Replay Status", replay?.status || "—"],
+          ["Replay Selected", replay?.selected_source || "—"],
+          ["Replay Delta Net", fmtRub(replay?.selected_delta_net_pnl_rub)],
+          ["Replay Delta DD", fmtRub(replay?.selected_delta_drawdown_rub)],
           ["Updated", restrictions?.generated_at || active.updated_at || "—"],
         ],
       );
