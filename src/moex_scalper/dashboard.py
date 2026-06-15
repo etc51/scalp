@@ -734,6 +734,7 @@ HTML = """<!doctype html>
       const activeGuards = summary.risk_controls?.active_ticker_guards || [];
       const researchBest = summary.research?.best_strategy_lab_candidate || null;
       const researchRecommendation = summary.research?.strategy_lab_recommendation || null;
+      const shadowToday = summary.shadow?.today || null;
       return renderTable(
         ["Metric", "Value"],
         [
@@ -749,6 +750,10 @@ HTML = """<!doctype html>
           ["In-Window Snapshots", fmtNum(summary.today?.recorded_snapshots || 0, 0)],
           ["Overall Trades", fmtNum(summary.overall?.trade_count || 0, 0)],
           ["Overall Net PnL", `<span class="${pnlClass(summary.overall?.net_pnl_rub)}">${fmtRub(summary.overall?.net_pnl_rub)}</span>`],
+          ["Shadow 2m Active", fmtNum(summary.shadow?.active_count || 0, 0)],
+          ["Shadow Obs", fmtNum(shadowToday?.observation_count || 0, 0)],
+          ["Shadow Improved", fmtNum(shadowToday?.improved_rate_pct || 0, 2) + " %"],
+          ["Shadow Delta", `<span class="${pnlClass(shadowToday?.delta_net_pnl_rub)}">${fmtRub(shadowToday?.delta_net_pnl_rub)}</span>`],
           ["Analysis", summary.analysis?.assessment || summary.analysis?.status || "—"],
           ["Ticker Guards", activeGuards.map((item) => `${item.ticker} [${(item.reasons || []).join(", ")}]`).join(" | ") || "—"],
           ["Optimizer", summary.optimizer?.status || "—"],
@@ -1082,6 +1087,14 @@ def _default_payload() -> dict[str, object]:
             "skipped_snapshots_total": 0,
             "current_day": None,
             "last_recorded_at": None,
+        },
+        "shadow": {
+            "followup_seconds": 120,
+            "active_count": 0,
+            "active": [],
+            "recent_completed_today": [],
+            "today": None,
+            "overall": None,
         },
         "realized_pnl_rub": "0",
         "blocked_reasons": {},

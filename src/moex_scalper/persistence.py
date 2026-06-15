@@ -127,6 +127,25 @@ def _empty_summary(scope: str) -> dict[str, Any]:
     }
 
 
+def _empty_shadow_summary(scope: str) -> dict[str, Any]:
+    return {
+        "scope": scope,
+        "observation_count": 0,
+        "improved_count": 0,
+        "worsened_count": 0,
+        "flat_count": 0,
+        "improved_rate_pct": 0.0,
+        "real_net_pnl_rub": "0",
+        "shadow_net_pnl_rub": "0",
+        "delta_net_pnl_rub": "0",
+        "average_delta_net_pnl_rub": "0",
+        "best_delta_net_pnl_rub": None,
+        "worst_delta_net_pnl_rub": None,
+        "last_trade_at": None,
+        "last_ticker": None,
+    }
+
+
 class PaperRuntimeStore:
     def __init__(self, runtime_dir: Path, timezone_info: object) -> None:
         self.runtime_dir = runtime_dir
@@ -134,9 +153,13 @@ class PaperRuntimeStore:
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
         self.session_path = self.runtime_dir / "paper_session.json"
         self.trades_path = self.runtime_dir / "paper_trades.jsonl"
+        self.shadow_trades_path = self.runtime_dir / "shadow_trades.jsonl"
         self.stats_dir = self.runtime_dir / "stats"
         self.daily_dir = self.stats_dir / "daily"
         self.overview_path = self.stats_dir / "overview.json"
+        self.shadow_stats_dir = self.stats_dir / "shadow"
+        self.shadow_daily_dir = self.shadow_stats_dir / "daily"
+        self.shadow_overview_path = self.shadow_stats_dir / "overview.json"
 
     def load_session(self) -> dict[str, Any] | None:
         if not self.session_path.exists():
@@ -168,6 +191,8 @@ class PaperRuntimeStore:
         skipped_market_snapshots_total: int,
         recorded_market_snapshot_day: str | None,
         last_recorded_market_snapshot_at: datetime | None,
+        active_shadow_trades: list[dict[str, Any]],
+        shadow_recent_completed_today: list[dict[str, Any]],
     ) -> None:
         payload = {
             "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -207,6 +232,10 @@ class PaperRuntimeStore:
                     else None
                 ),
             },
+            "shadow": {
+                "active_trades": active_shadow_trades,
+                "recent_completed_today": shadow_recent_completed_today,
+            },
         }
         _atomic_write_json(self.session_path, payload)
 
@@ -228,6 +257,25 @@ class PaperRuntimeStore:
             _atomic_write_json(daily_path, today)
         return {"overall": overview, "today": today}
 
+    def append_shadow_result(self, payload: dict[str, Any]) -> None:
+        self.shadow_trades_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.shadow_trades_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        shadow_closed_at = datetime.fromisoformat(str(payload["shadow_closed_at"]))
+        day_key = trading_day_key(shadow_closed_at, self.timezone_info)
+        self._update_shadow_summary(self._shadow_daily_summary_path(day_key), payload, scope=day_key)
+        self._update_shadow_summary(self.shadow_overview_path, payload, scope="all_time")
+
+    def load_shadow_stats(self, current_day: str) -> dict[str, dict[str, Any]]:
+        overview = self._read_shadow_summary(self.shadow_overview_path, scope="all_time")
+        today = self._read_shadow_summary(self._shadow_daily_summary_path(current_day), scope=current_day)
+        if not self.shadow_overview_path.exists():
+            _atomic_write_json(self.shadow_overview_path, overview)
+        daily_path = self._shadow_daily_summary_path(current_day)
+        if not daily_path.exists():
+            _atomic_write_json(daily_path, today)
+        return {"overall": overview, "today": today}
+
     def seed_history_if_empty(self, trades: list[ClosedTrade]) -> bool:
         if not trades:
             return False
@@ -242,6 +290,9 @@ class PaperRuntimeStore:
     def _daily_summary_path(self, day_key: str) -> Path:
         return self.daily_dir / f"{day_key}.json"
 
+    def _shadow_daily_summary_path(self, day_key: str) -> Path:
+        return self.shadow_daily_dir / f"{day_key}.json"
+
     def _read_summary(self, path: Path, *, scope: str) -> dict[str, Any]:
         if not path.exists():
             return _empty_summary(scope)
@@ -249,6 +300,16 @@ class PaperRuntimeStore:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             return _empty_summary(scope)
+        payload.setdefault("scope", scope)
+        return payload
+
+    def _read_shadow_summary(self, path: Path, *, scope: str) -> dict[str, Any]:
+        if not path.exists():
+            return _empty_shadow_summary(scope)
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return _empty_shadow_summary(scope)
         payload.setdefault("scope", scope)
         return payload
 
@@ -298,6 +359,44 @@ class PaperRuntimeStore:
         summary["last_ticker"] = trade.instrument.ticker
         _atomic_write_json(path, summary)
 
+    def _update_shadow_summary(self, path: Path, payload: dict[str, Any], *, scope: str) -> None:
+        summary = self._read_shadow_summary(path, scope=scope)
+        observation_count = int(summary.get("observation_count", 0)) + 1
+        delta_net = _decimal(payload.get("delta_net_pnl_rub"))
+        real_net = _decimal(payload.get("real_net_pnl_rub"))
+        shadow_net = _decimal(payload.get("shadow_net_pnl_rub"))
+        total_delta_net = _decimal(summary.get("delta_net_pnl_rub")) + delta_net
+        best_delta = delta_net
+        worst_delta = delta_net
+        if summary.get("best_delta_net_pnl_rub") is not None:
+            best_delta = max(best_delta, _decimal(summary.get("best_delta_net_pnl_rub")))
+        if summary.get("worst_delta_net_pnl_rub") is not None:
+            worst_delta = min(worst_delta, _decimal(summary.get("worst_delta_net_pnl_rub")))
+
+        result = str(payload.get("shadow_result") or "flat")
+        if result == "better":
+            summary["improved_count"] = int(summary.get("improved_count", 0)) + 1
+        elif result == "worse":
+            summary["worsened_count"] = int(summary.get("worsened_count", 0)) + 1
+        else:
+            summary["flat_count"] = int(summary.get("flat_count", 0)) + 1
+
+        summary["scope"] = scope
+        summary["observation_count"] = observation_count
+        summary["real_net_pnl_rub"] = str(_decimal(summary.get("real_net_pnl_rub")) + real_net)
+        summary["shadow_net_pnl_rub"] = str(_decimal(summary.get("shadow_net_pnl_rub")) + shadow_net)
+        summary["delta_net_pnl_rub"] = str(total_delta_net)
+        summary["average_delta_net_pnl_rub"] = str(total_delta_net / Decimal(observation_count))
+        summary["improved_rate_pct"] = round(
+            (int(summary.get("improved_count", 0)) / observation_count) * 100,
+            2,
+        ) if observation_count else 0.0
+        summary["best_delta_net_pnl_rub"] = str(best_delta)
+        summary["worst_delta_net_pnl_rub"] = str(worst_delta)
+        summary["last_trade_at"] = str(payload.get("shadow_closed_at") or payload.get("real_closed_at") or "")
+        summary["last_ticker"] = str(payload.get("ticker") or "")
+        _atomic_write_json(path, summary)
+
 
 def restore_runtime_entities(
     payload: dict[str, Any],
@@ -323,6 +422,7 @@ def restore_runtime_entities(
     ]
     risk_payload = dict(payload.get("risk", {}))
     market_history_payload = dict(payload.get("market_history", {}))
+    shadow_payload = dict(payload.get("shadow", {}))
     cooldown_until = {
         instrument_id: restored
         for instrument_id, restored in (
@@ -383,4 +483,6 @@ def restore_runtime_entities(
         "last_recorded_market_snapshot_at": _utc_iso_to_datetime(
             market_history_payload.get("last_recorded_at")
         ),
+        "active_shadow_trades": list(shadow_payload.get("active_trades", [])),
+        "shadow_recent_completed_today": list(shadow_payload.get("recent_completed_today", [])),
     }

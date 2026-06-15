@@ -46,6 +46,28 @@ class TradeRecord:
     hold_seconds: float
 
 
+@dataclass(slots=True, frozen=True)
+class ShadowTradeRecord:
+    instrument_id: str
+    ticker: str
+    side: str
+    quantity_lots: int
+    entry_price: Decimal
+    real_exit_price: Decimal
+    shadow_exit_price: Decimal
+    opened_at: datetime
+    real_closed_at: datetime
+    shadow_closed_at: datetime
+    real_hold_seconds: float
+    shadow_hold_seconds: float
+    shadow_follow_seconds: float
+    real_net_pnl_rub: Decimal
+    shadow_net_pnl_rub: Decimal
+    delta_net_pnl_rub: Decimal
+    real_exit_reason: str
+    shadow_result: str
+
+
 def analyze_trades(
     config: ScalperConfig,
     *,
@@ -57,6 +79,7 @@ def analyze_trades(
 ) -> dict[str, Any]:
     trades_path = resolve_trade_path(config.runtime_dir, input_path)
     records = load_trade_records(trades_path)
+    shadow_records = load_shadow_records(resolve_shadow_trade_path(config.runtime_dir, input_path))
     report_key = build_report_key(config, date_key=date_key, days=days)
 
     if not records:
@@ -182,7 +205,28 @@ def analyze_trades(
             serialize_trade_record(record)
             for record in sorted(filtered, key=lambda item: item.net_pnl_rub, reverse=True)[:top_n]
         ],
+        "shadow_followup": build_shadow_followup_section(
+            config,
+            shadow_records=shadow_records,
+            start_date=start_date,
+            end_date=resolved_end_date,
+        ),
     }
+    shadow_followup = payload["shadow_followup"] or {}
+    shadow_summary = shadow_followup.get("summary") or {}
+    if int(shadow_summary.get("observation_count", 0) or 0) > 0:
+        focus.append(
+            {
+                "type": "shadow_followup",
+                "message": (
+                    "Shadow follow-up after close: "
+                    f"improved_rate={shadow_summary.get('improved_rate_pct', 0)}%, "
+                    f"delta_net={shadow_summary.get('delta_net_pnl_rub', '0')} RUB."
+                ),
+                "improved_rate_pct": shadow_summary.get("improved_rate_pct"),
+                "delta_net_pnl_rub": shadow_summary.get("delta_net_pnl_rub"),
+            }
+        )
     maybe_write_report(config.runtime_dir, payload, report_key=report_key, enabled=write_report)
     return payload
 
@@ -194,6 +238,16 @@ def resolve_trade_path(runtime_dir: Path, input_path: str | None) -> Path:
             return candidate / "paper_trades.jsonl"
         return candidate
     return runtime_dir / "paper_trades.jsonl"
+
+
+def resolve_shadow_trade_path(runtime_dir: Path, input_path: str | None) -> Path:
+    if input_path:
+        candidate = Path(input_path)
+        if candidate.is_dir():
+            return candidate / "shadow_trades.jsonl"
+        if candidate.name == "paper_trades.jsonl":
+            return candidate.with_name("shadow_trades.jsonl")
+    return runtime_dir / "shadow_trades.jsonl"
 
 
 def resolve_date_key(config: ScalperConfig, explicit: str | None) -> str:
@@ -236,6 +290,44 @@ def load_trade_records(path: Path) -> list[TradeRecord]:
                         entry_reason=str(item.get("entry_reason", "")),
                         exit_reason=str(item.get("exit_reason", "")),
                         hold_seconds=hold_seconds,
+                    )
+                )
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError, ArithmeticError):
+                continue
+    return records
+
+
+def load_shadow_records(path: Path) -> list[ShadowTradeRecord]:
+    if not path.exists():
+        return []
+    records: list[ShadowTradeRecord] = []
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            raw = line.strip()
+            if not raw:
+                continue
+            try:
+                item = json.loads(raw)
+                records.append(
+                    ShadowTradeRecord(
+                        instrument_id=str(item.get("instrument_id", "")),
+                        ticker=str(item.get("ticker", "")),
+                        side=str(item.get("side", "")),
+                        quantity_lots=int(item.get("quantity_lots", 0)),
+                        entry_price=_decimal(item.get("entry_price")),
+                        real_exit_price=_decimal(item.get("real_exit_price")),
+                        shadow_exit_price=_decimal(item.get("shadow_exit_price")),
+                        opened_at=datetime.fromisoformat(str(item["opened_at"])),
+                        real_closed_at=datetime.fromisoformat(str(item["real_closed_at"])),
+                        shadow_closed_at=datetime.fromisoformat(str(item["shadow_closed_at"])),
+                        real_hold_seconds=float(item.get("real_hold_seconds", 0.0)),
+                        shadow_hold_seconds=float(item.get("shadow_hold_seconds", 0.0)),
+                        shadow_follow_seconds=float(item.get("shadow_follow_seconds", 0.0)),
+                        real_net_pnl_rub=_decimal(item.get("real_net_pnl_rub")),
+                        shadow_net_pnl_rub=_decimal(item.get("shadow_net_pnl_rub")),
+                        delta_net_pnl_rub=_decimal(item.get("delta_net_pnl_rub")),
+                        real_exit_reason=str(item.get("real_exit_reason", "")),
+                        shadow_result=str(item.get("shadow_result", "flat")),
                     )
                 )
             except (json.JSONDecodeError, KeyError, TypeError, ValueError, ArithmeticError):
@@ -473,6 +565,94 @@ def classify_assessment(summary: dict[str, Any]) -> str:
     return "mixed_sample"
 
 
+def build_shadow_followup_section(
+    config: ScalperConfig,
+    *,
+    shadow_records: list[ShadowTradeRecord],
+    start_date: date,
+    end_date: date,
+) -> dict[str, Any]:
+    selected = [
+        record
+        for record in shadow_records
+        if start_date <= record.real_closed_at.astimezone(config.timezone).date() <= end_date
+    ]
+    if not selected:
+        return {
+            "status": "no_data",
+            "observation_count": 0,
+            "summary": {
+                "observation_count": 0,
+                "improved_count": 0,
+                "worsened_count": 0,
+                "flat_count": 0,
+                "improved_rate_pct": 0.0,
+                "real_net_pnl_rub": "0",
+                "shadow_net_pnl_rub": "0",
+                "delta_net_pnl_rub": "0",
+                "average_delta_net_pnl_rub": "0",
+            },
+        }
+
+    improved = [item for item in selected if item.shadow_result == "better"]
+    worsened = [item for item in selected if item.shadow_result == "worse"]
+    flat = [item for item in selected if item.shadow_result == "flat"]
+    real_net = sum((item.real_net_pnl_rub for item in selected), start=Decimal("0"))
+    shadow_net = sum((item.shadow_net_pnl_rub for item in selected), start=Decimal("0"))
+    delta_net = sum((item.delta_net_pnl_rub for item in selected), start=Decimal("0"))
+    best_delta = max((item.delta_net_pnl_rub for item in selected), default=Decimal("0"))
+    worst_delta = min((item.delta_net_pnl_rub for item in selected), default=Decimal("0"))
+    latest = max(selected, key=lambda item: item.shadow_closed_at)
+    by_exit_reason = defaultdict(list)
+    for item in selected:
+        by_exit_reason[item.real_exit_reason].append(item)
+
+    return {
+        "status": "ok",
+        "observation_count": len(selected),
+        "summary": {
+            "observation_count": len(selected),
+            "improved_count": len(improved),
+            "worsened_count": len(worsened),
+            "flat_count": len(flat),
+            "improved_rate_pct": round((len(improved) / len(selected)) * 100, 2),
+            "real_net_pnl_rub": str(real_net),
+            "shadow_net_pnl_rub": str(shadow_net),
+            "delta_net_pnl_rub": str(delta_net),
+            "average_delta_net_pnl_rub": str(delta_net / Decimal(len(selected))),
+            "best_delta_net_pnl_rub": str(best_delta),
+            "worst_delta_net_pnl_rub": str(worst_delta),
+            "average_follow_seconds": round(
+                sum(item.shadow_follow_seconds for item in selected) / len(selected),
+                3,
+            ),
+            "last_trade_at": latest.shadow_closed_at.isoformat(),
+            "last_ticker": latest.ticker,
+        },
+        "by_exit_reason": {
+            reason: {
+                "observation_count": len(items),
+                "improved_rate_pct": round(
+                    (sum(1 for item in items if item.shadow_result == "better") / len(items)) * 100,
+                    2,
+                ),
+                "delta_net_pnl_rub": str(
+                    sum((item.delta_net_pnl_rub for item in items), start=Decimal("0"))
+                ),
+            }
+            for reason, items in sorted(by_exit_reason.items())
+        },
+        "largest_improvements": [
+            serialize_shadow_record(item)
+            for item in sorted(selected, key=lambda item: item.delta_net_pnl_rub, reverse=True)[:5]
+        ],
+        "largest_deteriorations": [
+            serialize_shadow_record(item)
+            for item in sorted(selected, key=lambda item: item.delta_net_pnl_rub)[:5]
+        ],
+    }
+
+
 def serialize_trade_record(record: TradeRecord) -> dict[str, Any]:
     return {
         "ticker": record.ticker,
@@ -487,6 +667,22 @@ def serialize_trade_record(record: TradeRecord) -> dict[str, Any]:
         "net_pnl_rub": str(record.net_pnl_rub),
         "exit_reason": record.exit_reason,
         "hold_seconds": round(record.hold_seconds, 3),
+    }
+
+
+def serialize_shadow_record(record: ShadowTradeRecord) -> dict[str, Any]:
+    return {
+        "ticker": record.ticker,
+        "side": record.side,
+        "quantity_lots": record.quantity_lots,
+        "real_exit_reason": record.real_exit_reason,
+        "real_closed_at": record.real_closed_at.isoformat(),
+        "shadow_closed_at": record.shadow_closed_at.isoformat(),
+        "real_net_pnl_rub": str(record.real_net_pnl_rub),
+        "shadow_net_pnl_rub": str(record.shadow_net_pnl_rub),
+        "delta_net_pnl_rub": str(record.delta_net_pnl_rub),
+        "shadow_result": record.shadow_result,
+        "shadow_follow_seconds": round(record.shadow_follow_seconds, 3),
     }
 
 

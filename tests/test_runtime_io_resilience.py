@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
-from moex_scalper.analysis import load_trade_records
+from moex_scalper.analysis import load_shadow_records, load_trade_records
 from moex_scalper.market_history import load_snapshots
 from moex_scalper.persistence import PaperRuntimeStore
 
@@ -72,6 +72,40 @@ class RuntimeIoResilienceTests(unittest.TestCase):
             self.assertEqual(snapshots[0].instrument.ticker, "SBER")
             self.assertEqual(snapshots[0].bid_price, Decimal("100"))
 
+    def test_load_shadow_records_skips_corrupt_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "shadow_trades.jsonl"
+            good = {
+                "instrument_id": "instrument-sber",
+                "ticker": "SBER",
+                "side": "buy",
+                "quantity_lots": 1,
+                "entry_price": "100",
+                "real_exit_price": "100.1",
+                "shadow_exit_price": "100.2",
+                "opened_at": "2026-06-15T10:15:00+00:00",
+                "real_closed_at": "2026-06-15T10:15:06+00:00",
+                "shadow_closed_at": "2026-06-15T10:17:06+00:00",
+                "real_hold_seconds": 6,
+                "shadow_hold_seconds": 126,
+                "shadow_follow_seconds": 120,
+                "real_net_pnl_rub": "9",
+                "shadow_net_pnl_rub": "11",
+                "delta_net_pnl_rub": "2",
+                "real_exit_reason": "time_stop",
+                "shadow_result": "better",
+            }
+            path.write_text(
+                json.dumps(good, ensure_ascii=False) + "\n" + "{broken json}\n",
+                encoding="utf-8",
+            )
+
+            records = load_shadow_records(path)
+
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0].ticker, "SBER")
+            self.assertEqual(records[0].delta_net_pnl_rub, Decimal("2"))
+
     def test_corrupt_summary_and_session_fallback_to_empty(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             runtime_dir = Path(tmpdir)
@@ -89,6 +123,42 @@ class RuntimeIoResilienceTests(unittest.TestCase):
             self.assertEqual(stats["overall"]["trade_count"], 0)
             self.assertEqual(stats["today"]["scope"], "2026-06-15")
             self.assertEqual(stats["overall"]["scope"], "all_time")
+
+    def test_shadow_stats_append_and_load(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_dir = Path(tmpdir)
+            store = PaperRuntimeStore(runtime_dir, timezone.utc)
+
+            store.append_shadow_result(
+                {
+                    "instrument_id": "instrument-sber",
+                    "ticker": "SBER",
+                    "side": "buy",
+                    "quantity_lots": 1,
+                    "entry_price": "100",
+                    "real_exit_price": "100.1",
+                    "shadow_exit_price": "100.2",
+                    "opened_at": "2026-06-15T10:15:00+00:00",
+                    "real_closed_at": "2026-06-15T10:15:06+00:00",
+                    "shadow_closed_at": "2026-06-15T10:17:06+00:00",
+                    "real_hold_seconds": 6,
+                    "shadow_hold_seconds": 126,
+                    "shadow_follow_seconds": 120,
+                    "real_net_pnl_rub": "9",
+                    "shadow_net_pnl_rub": "11",
+                    "delta_net_pnl_rub": "2",
+                    "real_exit_reason": "time_stop",
+                    "shadow_result": "better",
+                }
+            )
+
+            stats = store.load_shadow_stats("2026-06-15")
+
+            self.assertEqual(stats["today"]["observation_count"], 1)
+            self.assertEqual(stats["today"]["improved_count"], 1)
+            self.assertEqual(stats["today"]["delta_net_pnl_rub"], "2")
+            self.assertEqual(stats["overall"]["observation_count"], 1)
+            self.assertEqual(stats["overall"]["last_ticker"], "SBER")
 
 
 if __name__ == "__main__":

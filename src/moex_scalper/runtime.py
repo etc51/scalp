@@ -5,7 +5,7 @@ import json
 import logging
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -29,6 +29,7 @@ from .tuning import current_strategy_parameters
 
 
 LOGGER = logging.getLogger("moex_scalper")
+SHADOW_FOLLOWUP_SECONDS = 120.0
 
 
 def setup_logging(runtime_dir: Path) -> None:
@@ -48,6 +49,8 @@ def setup_logging(runtime_dir: Path) -> None:
 class BotState:
     positions: dict[str, Position] = field(default_factory=dict)
     trades_today: list[ClosedTrade] = None
+    active_shadow_trades: list[dict[str, object]] = field(default_factory=list)
+    shadow_recent_completed_today: list[dict[str, object]] = field(default_factory=list)
     snapshots_processed: int = 0
     signal_candidates_detected: int = 0
     signals_detected: int = 0
@@ -63,6 +66,7 @@ class BotState:
     last_snapshots: dict[str, MarketSnapshot] = field(default_factory=dict)
     last_market_data_at: datetime | None = None
     stats: dict[str, dict[str, object]] = field(default_factory=dict)
+    shadow_stats: dict[str, dict[str, object]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.trades_today is None:
@@ -73,6 +77,7 @@ class ScalperRuntime:
     def __init__(self, config: ScalperConfig) -> None:
         self.config = config
         self.strategy = ModerateScalpingStrategy(config)
+        self._commission_model = CommissionModel(config.premium_share_commission_bps)
         self.risk = RiskManager(config)
         self.state = BotState()
         self.stop_event = asyncio.Event()
@@ -85,7 +90,6 @@ class ScalperRuntime:
 
     async def run(self) -> None:
         setup_logging(self.config.runtime_dir)
-        commission_model = CommissionModel(self.config.premium_share_commission_bps)
         LOGGER.info(
             "Starting scalper mode=%s watchlist=%s premium_commission_bps=%s min_expected_edge_bps=%s min_net_take_profit_bps=%s regime_filter_mode=%s strategy_overlay_mode=%s",
             self.config.mode,
@@ -140,11 +144,11 @@ class ScalperRuntime:
                     services=services,
                     account_id=self.config.account_id,
                     inbox=inbox,
-                    commission_model=commission_model,
+                    commission_model=self._commission_model,
                 )
             else:
                 executor = PaperExecutor(
-                    commission_model=commission_model,
+                    commission_model=self._commission_model,
                     initial_cash_rub=self.config.paper_initial_cash_rub,
                     max_gross_leverage=self.config.paper_max_gross_leverage,
                 )
@@ -222,6 +226,7 @@ class ScalperRuntime:
             f"bid={snapshot.bid_price} ask={snapshot.ask_price} "
             f"spread_bps={snapshot.spread_bps:.2f} imbalance={snapshot.imbalance:.3f}"
         )
+        self._advance_shadow_trades(snapshot)
         position = self.state.positions.get(snapshot.instrument.instrument_id)
         if position is not None:
             exit_decision = self.strategy.evaluate_exit(position, snapshot)
@@ -350,6 +355,7 @@ class ScalperRuntime:
         self.risk.note_closed_trade(trade)
         if isinstance(executor, PaperExecutor):
             self._record_paper_trade(trade)
+            self._start_shadow_followup(trade, position)
         LOGGER.info(
             "CLOSE %s reason=%s exit_price=%s gross=%s fees=%s net=%s realized_today=%s",
             trade.instrument.ticker,
@@ -586,6 +592,14 @@ class ScalperRuntime:
             "blocked_reasons": dict(self.state.blocked_reasons),
             "execution_blocked_reasons": dict(self.state.execution_blocked_reasons),
             "stats": self.state.stats,
+            "shadow": {
+                "followup_seconds": SHADOW_FOLLOWUP_SECONDS,
+                "active_count": len(self.state.active_shadow_trades),
+                "active": self.state.active_shadow_trades[-20:],
+                "recent_completed_today": self.state.shadow_recent_completed_today[-20:],
+                "today": (self.state.shadow_stats or {}).get("today"),
+                "overall": (self.state.shadow_stats or {}).get("overall"),
+            },
             "portfolio": portfolio,
             "positions": [
                 {
@@ -721,6 +735,12 @@ class ScalperRuntime:
         self.state.skipped_market_snapshots_total = restored["skipped_market_snapshots_total"]
         self.state.recorded_market_snapshot_day = restored["recorded_market_snapshot_day"]
         self.state.last_recorded_market_snapshot_at = restored["last_recorded_market_snapshot_at"]
+        self.state.active_shadow_trades = list(restored["active_shadow_trades"])
+        self.state.shadow_recent_completed_today = [
+            item
+            for item in list(restored["shadow_recent_completed_today"])
+            if str(item.get("shadow_closed_at", "")).startswith(current_day)
+        ]
         self._roll_market_history_day(datetime.now(timezone.utc))
         LOGGER.info(
             "Restored paper session cash=%s positions=%s trades_today=%s realized_today=%s guarded_tickers=%s",
@@ -756,6 +776,8 @@ class ScalperRuntime:
                 skipped_market_snapshots_total=self.state.skipped_market_snapshots_total,
                 recorded_market_snapshot_day=self.state.recorded_market_snapshot_day,
                 last_recorded_market_snapshot_at=self.state.last_recorded_market_snapshot_at,
+                active_shadow_trades=self.state.active_shadow_trades,
+                shadow_recent_completed_today=self.state.shadow_recent_completed_today[-20:],
             )
         except Exception:  # noqa: BLE001
             LOGGER.exception("Failed to save paper session state")
@@ -770,13 +792,120 @@ class ScalperRuntime:
     def _refresh_paper_stats(self) -> None:
         try:
             self.state.stats = self.paper_store.load_stats(self.risk.current_day)
+            self.state.shadow_stats = self.paper_store.load_shadow_stats(self.risk.current_day)
         except Exception:  # noqa: BLE001
             LOGGER.exception("Failed to load paper stats")
+
+    def _start_shadow_followup(self, trade: ClosedTrade, position: Position) -> None:
+        shadow_trade = {
+            "instrument_id": trade.instrument.instrument_id,
+            "ticker": trade.instrument.ticker,
+            "side": trade.side.value,
+            "quantity_lots": trade.quantity_lots,
+            "lot_size": trade.instrument.lot_size,
+            "entry_price": str(trade.entry_price),
+            "entry_fee_rub": str(position.entry_fee_rub),
+            "opened_at": trade.opened_at.isoformat(),
+            "real_closed_at": trade.closed_at.isoformat(),
+            "real_exit_price": str(trade.exit_price),
+            "real_hold_seconds": round((trade.closed_at - trade.opened_at).total_seconds(), 3),
+            "real_net_pnl_rub": str(trade.net_pnl_rub),
+            "real_exit_reason": trade.exit_reason,
+            "shadow_due_at": (trade.closed_at + timedelta(seconds=SHADOW_FOLLOWUP_SECONDS)).isoformat(),
+        }
+        self.state.active_shadow_trades.append(shadow_trade)
+
+    def _advance_shadow_trades(self, snapshot: MarketSnapshot) -> None:
+        if not self.state.active_shadow_trades:
+            return
+
+        remaining: list[dict[str, object]] = []
+        for payload in self.state.active_shadow_trades:
+            try:
+                instrument_id = str(payload.get("instrument_id") or "")
+                if instrument_id != snapshot.instrument.instrument_id:
+                    remaining.append(payload)
+                    continue
+
+                due_at = datetime.fromisoformat(str(payload["shadow_due_at"]))
+                if snapshot.at < due_at:
+                    remaining.append(payload)
+                    continue
+
+                shadow_exit_price = snapshot.bid_price
+                if str(payload.get("side")) == Side.SELL.value:
+                    shadow_exit_price = snapshot.ask_price
+                entry_price = Decimal(str(payload["entry_price"]))
+                quantity_lots = int(payload["quantity_lots"])
+                lot_size = int(payload["lot_size"])
+                gross_pnl = (shadow_exit_price - entry_price) * Decimal(lot_size) * Decimal(quantity_lots)
+                if str(payload.get("side")) == Side.SELL.value:
+                    gross_pnl = (entry_price - shadow_exit_price) * Decimal(lot_size) * Decimal(quantity_lots)
+                estimated_exit_fee_rub = self._commission_model.fee_rub(
+                    shadow_exit_price * Decimal(lot_size) * Decimal(quantity_lots)
+                )
+                shadow_net_pnl = gross_pnl - Decimal(str(payload["entry_fee_rub"])) - estimated_exit_fee_rub
+                real_net_pnl = Decimal(str(payload["real_net_pnl_rub"]))
+                delta_net_pnl = shadow_net_pnl - real_net_pnl
+                shadow_result = "flat"
+                if delta_net_pnl > 0:
+                    shadow_result = "better"
+                elif delta_net_pnl < 0:
+                    shadow_result = "worse"
+                completed = {
+                    "instrument_id": instrument_id,
+                    "ticker": str(payload["ticker"]),
+                    "side": str(payload["side"]),
+                    "quantity_lots": quantity_lots,
+                    "entry_price": str(entry_price),
+                    "real_exit_price": str(payload["real_exit_price"]),
+                    "shadow_exit_price": str(shadow_exit_price),
+                    "opened_at": str(payload["opened_at"]),
+                    "real_closed_at": str(payload["real_closed_at"]),
+                    "shadow_closed_at": snapshot.at.isoformat(),
+                    "real_hold_seconds": payload["real_hold_seconds"],
+                    "shadow_hold_seconds": round(
+                        (snapshot.at - datetime.fromisoformat(str(payload["opened_at"]))).total_seconds(),
+                        3,
+                    ),
+                    "shadow_follow_seconds": round(
+                        (snapshot.at - datetime.fromisoformat(str(payload["real_closed_at"]))).total_seconds(),
+                        3,
+                    ),
+                    "real_net_pnl_rub": str(real_net_pnl),
+                    "shadow_net_pnl_rub": str(shadow_net_pnl),
+                    "delta_net_pnl_rub": str(delta_net_pnl),
+                    "real_exit_reason": str(payload["real_exit_reason"]),
+                    "shadow_result": shadow_result,
+                }
+            except (ArithmeticError, KeyError, TypeError, ValueError):
+                LOGGER.exception("Failed to advance shadow trade payload=%s", payload)
+                continue
+
+            self.paper_store.append_shadow_result(completed)
+            self.state.shadow_recent_completed_today.append(completed)
+            self.state.shadow_recent_completed_today = self.state.shadow_recent_completed_today[-20:]
+            self._refresh_paper_stats()
+            LOGGER.info(
+                "SHADOW_CLOSE %s side=%s result=%s real_net=%s shadow_net=%s delta=%s hold_plus=%ss",
+                completed["ticker"],
+                completed["side"],
+                shadow_result,
+                completed["real_net_pnl_rub"],
+                completed["shadow_net_pnl_rub"],
+                completed["delta_net_pnl_rub"],
+                completed["shadow_follow_seconds"],
+            )
+
+        self.state.active_shadow_trades = remaining
 
     def _roll_market_history_day(self, moment: datetime) -> None:
         day_key = moment.astimezone(self.config.timezone).date().isoformat()
         if self.state.recorded_market_snapshot_day == day_key:
             return
+        if self.state.recorded_market_snapshot_day is not None:
+            self.state.shadow_recent_completed_today = []
+            self.state.active_shadow_trades = []
         self.state.recorded_market_snapshot_day = day_key
         self.state.recorded_market_snapshots_today = 0
 

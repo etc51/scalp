@@ -8,6 +8,8 @@ from typing import Any
 from .config import ScalperConfig
 from .diagnostics import resolve_strategy_config_next_action
 
+SHADOW_MIN_OBSERVATIONS_FOR_SIGNAL = 5
+
 
 def build_daily_summary(
     config: ScalperConfig,
@@ -27,6 +29,7 @@ def build_daily_summary(
 
     today_stats = ((state or {}).get("stats") or {}).get("today") or {}
     overall_stats = ((state or {}).get("stats") or {}).get("overall") or {}
+    shadow_state = (state or {}).get("shadow") or {}
     market_history = (state or {}).get("market_history") or {}
     blocked_reasons = dict((state or {}).get("blocked_reasons") or {})
     sorted_blocked = sorted(blocked_reasons.items(), key=lambda item: item[1], reverse=True)
@@ -57,6 +60,13 @@ def build_daily_summary(
             "trade_count": int(overall_stats.get("trade_count", 0) or 0),
             "net_pnl_rub": overall_stats.get("net_pnl_rub"),
             "win_rate_pct": overall_stats.get("win_rate_pct"),
+        },
+        "shadow": {
+            "followup_seconds": shadow_state.get("followup_seconds"),
+            "active_count": int(shadow_state.get("active_count", 0) or 0),
+            "today": shadow_state.get("today"),
+            "overall": shadow_state.get("overall"),
+            "recent_completed_today": list(shadow_state.get("recent_completed_today") or []),
         },
         "market_history": {
             "recording_mode": market_history.get("recording_mode"),
@@ -150,6 +160,8 @@ def build_focus(payload: dict[str, Any]) -> list[str]:
     active_session_guards = list(risk_controls.get("active_session_guards") or [])
     daily_loss_limit_hit = bool(risk_controls.get("daily_loss_limit_hit"))
     daily_loss_limit_enforced = bool(risk_controls.get("daily_loss_limit_enforced", True))
+    shadow = payload.get("shadow") or {}
+    shadow_today = shadow.get("today") or {}
 
     if watchdog.get("status") not in {None, "healthy"}:
         focus.append(f"Watchdog status: {watchdog.get('status')}.")
@@ -196,6 +208,12 @@ def build_focus(payload: dict[str, Any]) -> list[str]:
             )
     if int(today.get("trade_count", 0) or 0) <= 0:
         focus.append("Сегодня нет закрытых paper-сделок.")
+    if int(shadow_today.get("observation_count", 0) or 0) >= SHADOW_MIN_OBSERVATIONS_FOR_SIGNAL:
+        focus.append(
+            "Shadow 2m after close: "
+            f"improved_rate={shadow_today.get('improved_rate_pct', 0)}%, "
+            f"delta_net={shadow_today.get('delta_net_pnl_rub', '0')} RUB."
+        )
     if daily_loss_limit_hit and not daily_loss_limit_enforced:
         focus.append(
             "Paper-контур уже ниже дневного loss-limit, но продолжает собирать сделки для статистики и ночного анализа."
@@ -274,6 +292,8 @@ def build_headline(payload: dict[str, Any]) -> str:
     active_guards = list(risk_controls.get("active_ticker_guards") or [])
     daily_loss_limit_hit = bool(risk_controls.get("daily_loss_limit_hit"))
     daily_loss_limit_enforced = bool(risk_controls.get("daily_loss_limit_enforced", True))
+    shadow = payload.get("shadow") or {}
+    shadow_today = shadow.get("today") or {}
 
     if watchdog.get("status") not in {None, "healthy"}:
         return f"Watchdog status {watchdog.get('status')}: контур требует внимания."
@@ -303,6 +323,14 @@ def build_headline(payload: dict[str, Any]) -> str:
         return "Paper-контур пробил дневной loss-limit, но продолжает торговлю для накопления статистики."
     if int(today.get("trade_count", 0) or 0) <= 0:
         return "Сегодня закрытых paper-сделок нет; продолжаем сбор сигнала и market-data."
+    if (
+        int(shadow_today.get("observation_count", 0) or 0) >= SHADOW_MIN_OBSERVATIONS_FOR_SIGNAL
+        and str(shadow_today.get("delta_net_pnl_rub", "0")) != "0"
+    ):
+        return (
+            "Shadow-послесделочный follow-up уже показывает, "
+            f"что 2-минутное удержание дало бы delta {shadow_today.get('delta_net_pnl_rub')} RUB."
+        )
     if active_guards:
         if any(item.get("guard_cooldown_until") for item in active_guards):
             return (
@@ -331,6 +359,8 @@ def build_next_action(payload: dict[str, Any]) -> str:
     active_experiment = governance.get("active_experiment") or {}
     watchdog = payload.get("watchdog") or {}
     strategy_diagnostics = payload.get("strategy_diagnostics") or {}
+    shadow = payload.get("shadow") or {}
+    shadow_today = shadow.get("today") or {}
 
     if watchdog.get("restart_required"):
         return "inspect_watchdog_and_runtime"
@@ -350,6 +380,12 @@ def build_next_action(payload: dict[str, Any]) -> str:
         return str(watchdog.get("next_action"))
     if optimizer.get("status") == "no_entry_window_data" or research.get("status") == "no_entry_window_data":
         return "collect_in_window_market_data"
+    if int(shadow_today.get("observation_count", 0) or 0) >= SHADOW_MIN_OBSERVATIONS_FOR_SIGNAL:
+        delta = str(shadow_today.get("delta_net_pnl_rub", "0"))
+        if delta.startswith("-"):
+            return "tighten_late_exits_and_take_profit"
+        if delta != "0":
+            return "review_shadow_followup_for_exit_extension"
     if analysis.get("assessment") == "insufficient_sample":
         return "collect_more_paper_trades"
     if tuning.get("next_action") not in {None, "no_change", "wait_for_better_optimizer_candidate"}:
