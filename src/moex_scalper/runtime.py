@@ -49,13 +49,16 @@ class BotState:
     positions: dict[str, Position] = field(default_factory=dict)
     trades_today: list[ClosedTrade] = None
     snapshots_processed: int = 0
+    signal_candidates_detected: int = 0
     signals_detected: int = 0
+    execution_blocked_signals: int = 0
     recorded_market_snapshots_total: int = 0
     recorded_market_snapshots_today: int = 0
     skipped_market_snapshots_total: int = 0
     recorded_market_snapshot_day: str | None = None
     last_recorded_market_snapshot_at: datetime | None = None
     blocked_reasons: Counter[str] = field(default_factory=Counter)
+    execution_blocked_reasons: Counter[str] = field(default_factory=Counter)
     last_snapshot_summary: dict[str, str] = field(default_factory=dict)
     last_snapshots: dict[str, MarketSnapshot] = field(default_factory=dict)
     last_market_data_at: datetime | None = None
@@ -228,6 +231,16 @@ class ScalperRuntime:
         if not entry_allowed:
             self.state.blocked_reasons[entry_reason] += 1
             return
+
+        signal, block_reason, metrics = self.strategy.diagnose_entry(
+            snapshot,
+            has_open_position=False,
+        )
+        if signal is None:
+            self.state.blocked_reasons[block_reason] += 1
+            return
+        self.state.signal_candidates_detected += 1
+
         local_hour = snapshot.at.astimezone(self.config.timezone).hour
         restriction = restriction_reason(
             self.active_restrictions,
@@ -236,14 +249,8 @@ class ScalperRuntime:
         )
         if restriction is not None:
             self.state.blocked_reasons[restriction] += 1
-            return
-
-        signal, block_reason, metrics = self.strategy.diagnose_entry(
-            snapshot,
-            has_open_position=False,
-        )
-        if signal is None:
-            self.state.blocked_reasons[block_reason] += 1
+            self.state.execution_blocked_signals += 1
+            self.state.execution_blocked_reasons[restriction] += 1
             return
 
         quantity_lots, planned_notional_rub, sizing_reason = self._plan_entry(
@@ -253,6 +260,8 @@ class ScalperRuntime:
         )
         if quantity_lots <= 0:
             self.state.blocked_reasons[sizing_reason] += 1
+            self.state.execution_blocked_signals += 1
+            self.state.execution_blocked_reasons[sizing_reason] += 1
             return
 
         can_open, reason = self.risk.can_open(
@@ -262,6 +271,8 @@ class ScalperRuntime:
         )
         if not can_open:
             self.state.blocked_reasons[reason] += 1
+            self.state.execution_blocked_signals += 1
+            self.state.execution_blocked_reasons[reason] += 1
             return
 
         self.state.signals_detected += 1
@@ -277,7 +288,10 @@ class ScalperRuntime:
             time_stop_seconds=signal.time_stop_seconds,
             entry_fee_rub=report.fee_rub,
             reason=signal.reason,
-            metadata={"mode": self.config.mode},
+            metadata={
+                "mode": self.config.mode,
+                "entry_profile": signal.profile,
+            },
         )
         self.state.positions[position.instrument.instrument_id] = position
         LOGGER.info(
@@ -378,9 +392,11 @@ class ScalperRuntime:
             for ticker, summary in sorted(self.state.last_snapshot_summary.items())
         )
         LOGGER.info(
-            "HEARTBEAT snapshots=%s signals=%s open_position=%s realized_today=%s blocked=%s",
+            "HEARTBEAT snapshots=%s raw_signals=%s opened_signals=%s exec_blocked=%s open_position=%s realized_today=%s blocked=%s",
             self.state.snapshots_processed,
+            self.state.signal_candidates_detected,
             self.state.signals_detected,
+            self.state.execution_blocked_signals,
             ",".join(sorted(position.instrument.ticker for position in self.state.positions.values())) or "none",
             self.risk.realized_pnl_rub,
             top_reasons,
@@ -390,10 +406,12 @@ class ScalperRuntime:
 
     def _log_shutdown_summary(self) -> None:
         LOGGER.info(
-            "STOP snapshots=%s trades=%s signals=%s realized_today=%s open_position=%s",
+            "STOP snapshots=%s trades=%s raw_signals=%s opened_signals=%s exec_blocked=%s realized_today=%s open_position=%s",
             self.state.snapshots_processed,
             len(self.state.trades_today),
+            self.state.signal_candidates_detected,
             self.state.signals_detected,
+            self.state.execution_blocked_signals,
             self.risk.realized_pnl_rub,
             ",".join(sorted(position.instrument.ticker for position in self.state.positions.values())) or "none",
         )
@@ -533,7 +551,9 @@ class ScalperRuntime:
                 "end": self.config.entry_end_time.isoformat(timespec="minutes"),
             },
             "snapshots_processed": self.state.snapshots_processed,
+            "signal_candidates_detected": self.state.signal_candidates_detected,
             "signals_detected": self.state.signals_detected,
+            "execution_blocked_signals": self.state.execution_blocked_signals,
             "market_history": {
                 "recording_mode": "entry_window_only",
                 "entry_window_only": True,
@@ -558,6 +578,7 @@ class ScalperRuntime:
                 "stale_after_seconds": self.config.watchdog_max_market_data_age_seconds,
             },
             "blocked_reasons": dict(self.state.blocked_reasons),
+            "execution_blocked_reasons": dict(self.state.execution_blocked_reasons),
             "stats": self.state.stats,
             "portfolio": portfolio,
             "positions": [
@@ -588,6 +609,7 @@ class ScalperRuntime:
                     "opened_at": position.opened_at.isoformat(),
                     "entry_fee_rub": str(position.entry_fee_rub),
                     "entry_reason": position.reason,
+                    "entry_profile": position.metadata.get("entry_profile"),
                 }
                 for position in sorted(self.state.positions.values(), key=lambda item: item.instrument.ticker)
             ],
@@ -604,6 +626,7 @@ class ScalperRuntime:
                     "fees_rub": str(trade.fees_rub),
                     "net_pnl_rub": str(trade.net_pnl_rub),
                     "entry_reason": trade.entry_reason,
+                    "entry_profile": _extract_entry_profile(trade.entry_reason),
                     "exit_reason": trade.exit_reason,
                 }
                 for trade in self.state.trades_today[-100:]
@@ -682,8 +705,11 @@ class ScalperRuntime:
         if self.paper_store.seed_history_if_empty(self.state.trades_today):
             LOGGER.info("Seeded paper trade history from restored session trades=%s", len(self.state.trades_today))
         self.state.blocked_reasons = restored["blocked_reasons"]
+        self.state.execution_blocked_reasons = restored["execution_blocked_reasons"]
         self.state.snapshots_processed = restored["snapshots_processed"]
+        self.state.signal_candidates_detected = restored["signal_candidates_detected"]
         self.state.signals_detected = restored["signals_detected"]
+        self.state.execution_blocked_signals = restored["execution_blocked_signals"]
         self.state.recorded_market_snapshots_total = restored["recorded_market_snapshots_total"]
         self.state.recorded_market_snapshots_today = restored["recorded_market_snapshots_today"]
         self.state.skipped_market_snapshots_total = restored["skipped_market_snapshots_total"]
@@ -715,7 +741,10 @@ class ScalperRuntime:
                 ticker_guard_loss_anchor_rub=self.risk.ticker_guard_loss_anchor_rub,
                 blocked_reasons=self.state.blocked_reasons,
                 snapshots_processed=self.state.snapshots_processed,
+                signal_candidates_detected=self.state.signal_candidates_detected,
                 signals_detected=self.state.signals_detected,
+                execution_blocked_signals=self.state.execution_blocked_signals,
+                execution_blocked_reasons=self.state.execution_blocked_reasons,
                 recorded_market_snapshots_total=self.state.recorded_market_snapshots_total,
                 recorded_market_snapshots_today=self.state.recorded_market_snapshots_today,
                 skipped_market_snapshots_total=self.state.skipped_market_snapshots_total,
@@ -744,3 +773,10 @@ class ScalperRuntime:
             return
         self.state.recorded_market_snapshot_day = day_key
         self.state.recorded_market_snapshots_today = 0
+
+
+def _extract_entry_profile(reason: str) -> str | None:
+    for chunk in str(reason).split():
+        if chunk.startswith("profile="):
+            return chunk.split("=", 1)[1]
+    return None

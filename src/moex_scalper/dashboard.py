@@ -742,7 +742,9 @@ HTML = """<!doctype html>
           ["Mode", summary.mode || "—"],
           ["Today Trades", fmtNum(summary.today?.trade_count || 0, 0)],
           ["Today Net PnL", `<span class="${pnlClass(summary.today?.net_pnl_rub)}">${fmtRub(summary.today?.net_pnl_rub)}</span>`],
-          ["Signals", fmtNum(summary.today?.signals_detected || 0, 0)],
+          ["Raw Signals", fmtNum(summary.today?.signal_candidates_detected || 0, 0)],
+          ["Opened Signals", fmtNum(summary.today?.signals_detected || 0, 0)],
+          ["Exec Blocked", fmtNum(summary.today?.execution_blocked_signals || 0, 0)],
           ["Snapshots", fmtNum(summary.today?.snapshots_processed || 0, 0)],
           ["In-Window Snapshots", fmtNum(summary.today?.recorded_snapshots || 0, 0)],
           ["Overall Trades", fmtNum(summary.overall?.trade_count || 0, 0)],
@@ -932,7 +934,7 @@ HTML = """<!doctype html>
 
         const marketHistory = state.market_history || {};
         document.getElementById("subline").textContent =
-          `watchlist: ${(state.watchlist || []).join(", ")} | schedule: ${state.entry_schedule?.start || "—"}-${state.entry_schedule?.end || "—"} ${state.entry_schedule?.timezone || ""} | updated: ${state.updated_at || "—"} | processed: ${state.snapshots_processed || 0} | in-window today: ${marketHistory.recorded_snapshots_today || 0} | recorded total: ${marketHistory.recorded_snapshots_total || 0} | signals: ${state.signals_detected || 0}`;
+          `watchlist: ${(state.watchlist || []).join(", ")} | schedule: ${state.entry_schedule?.start || "—"}-${state.entry_schedule?.end || "—"} ${state.entry_schedule?.timezone || ""} | updated: ${state.updated_at || "—"} | processed: ${state.snapshots_processed || 0} | in-window today: ${marketHistory.recorded_snapshots_today || 0} | recorded total: ${marketHistory.recorded_snapshots_total || 0} | raw signals: ${state.signal_candidates_detected || 0} | opened: ${state.signals_detected || 0}`;
 
         document.getElementById("positionsWrap").innerHTML = renderTable(
           ["Ticker", "Side", "Qty", "Entry", "Mark", "Entry Fee", "Opened"],
@@ -1069,7 +1071,9 @@ def _default_payload() -> dict[str, object]:
             "end": None,
         },
         "snapshots_processed": 0,
+        "signal_candidates_detected": 0,
         "signals_detected": 0,
+        "execution_blocked_signals": 0,
         "market_history": {
             "recording_mode": "entry_window_only",
             "entry_window_only": True,
@@ -1081,6 +1085,7 @@ def _default_payload() -> dict[str, object]:
         },
         "realized_pnl_rub": "0",
         "blocked_reasons": {},
+        "execution_blocked_reasons": {},
         "stats": {
             "today": None,
             "overall": None,

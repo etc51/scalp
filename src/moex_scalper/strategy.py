@@ -218,6 +218,7 @@ class ModerateScalpingStrategy:
             stop_loss_bps=effective_stop_loss_bps,
             time_stop_seconds=effective_time_stop_seconds,
             reason=reason,
+            profile=entry_profile,
         ), "ok", metrics
 
     def evaluate_exit(self, position: Position, snapshot: MarketSnapshot) -> ExitDecision | None:

@@ -74,6 +74,7 @@ class EntrySignal:
     stop_loss_bps: Decimal
     time_stop_seconds: float
     reason: str
+    profile: str = "strict"
 
 
 @dataclass(slots=True, frozen=True)

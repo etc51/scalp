@@ -45,7 +45,9 @@ def build_daily_summary(
             "trade_count": int(today_stats.get("trade_count", 0) or 0),
             "net_pnl_rub": today_stats.get("net_pnl_rub"),
             "win_rate_pct": today_stats.get("win_rate_pct"),
+            "signal_candidates_detected": int((state or {}).get("signal_candidates_detected", 0) or 0),
             "signals_detected": int((state or {}).get("signals_detected", 0) or 0),
+            "execution_blocked_signals": int((state or {}).get("execution_blocked_signals", 0) or 0),
             "snapshots_processed": int((state or {}).get("snapshots_processed", 0) or 0),
             "recorded_snapshots": int(market_history.get("recorded_snapshots_today", 0) or 0),
             "open_positions": len(list((state or {}).get("positions") or [])),
@@ -239,6 +241,13 @@ def build_focus(payload: dict[str, Any]) -> list[str]:
             )
         if coverage.get("signal_ready_rate_pct") is not None:
             focus.append(f"Signal-ready rate внутри окна: {coverage['signal_ready_rate_pct']}%.")
+    raw_candidates = int(today.get("signal_candidates_detected", 0) or 0)
+    opened_signals = int(today.get("signals_detected", 0) or 0)
+    if raw_candidates > 0:
+        execution_share = round((opened_signals / raw_candidates) * 100, 2)
+        focus.append(
+            f"Execution-plane currently opens {opened_signals}/{raw_candidates} signal candidates ({execution_share}%)."
+        )
 
     for item in list(analysis.get("focus") or [])[:2]:
         message = item.get("message")
