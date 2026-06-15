@@ -22,6 +22,7 @@ PARAMETER_ENV_MAP: dict[str, str] = {
     "cooldown_seconds": "SCALPER_COOLDOWN_SECONDS",
 }
 REGIME_FILTER_ENV_KEY = "SCALPER_REGIME_FILTER_MODE"
+ALLOW_SHORT_ENV_KEY = "SCALPER_ALLOW_SHORT"
 EXPECTED_EDGE_STEPS = (Decimal("4"), Decimal("6"), Decimal("8"), Decimal("10"), Decimal("12"), Decimal("14"))
 IMPULSE_STEPS = (Decimal("1.0"), Decimal("1.5"), Decimal("2.5"), Decimal("4.0"))
 IMBALANCE_STEPS = (Decimal("0.45"), Decimal("0.50"), Decimal("0.55"), Decimal("0.60"), Decimal("0.66"))
@@ -82,6 +83,7 @@ def tune_parameters(
     )
     research_recommendation = dict((((research_payload or {}).get("regime_replay") or {}).get("recommendation") or {}))
     research_candidate = dict(research_recommendation.get("candidate") or {})
+    research_candidate_allow_short = research_candidate.get("allow_short")
 
     enabled = parse_bool(_env_value("SCALPER_AUTO_TUNE_ENABLED"), default=True)
     regime_apply_enabled = parse_bool(_env_value("SCALPER_AUTO_APPLY_REGIME_FILTER", "1"), default=True)
@@ -169,6 +171,7 @@ def tune_parameters(
 
     regime_reasons: list[str] = []
     selected_regime_filter_mode: str | None = None
+    selected_allow_short: bool | None = None
     if not regime_apply_enabled:
         regime_reasons.append("regime_autotune_disabled")
     if research_payload is None:
@@ -178,15 +181,29 @@ def tune_parameters(
     elif not research_recommendation.get("eligible", False):
         regime_reasons.append(f"research_{research_recommendation.get('reason', 'not_eligible')}")
     regime_candidate_mode = str(research_candidate.get("mode") or "").strip()
+    regime_candidate_allow_short = (
+        None
+        if research_candidate_allow_short is None
+        else bool(research_candidate_allow_short)
+    )
     if not regime_reasons:
         if not regime_candidate_mode:
             regime_reasons.append("missing_regime_candidate_mode")
-        elif regime_candidate_mode == config.regime_filter_mode:
-            regime_reasons.append("regime_filter_already_applied")
         elif regime_delta_vs_baseline_rub < min_regime_delta_rub:
             regime_reasons.append("regime_delta_below_threshold")
         else:
-            selected_regime_filter_mode = regime_candidate_mode
+            mode_would_change = regime_candidate_mode != config.regime_filter_mode
+            allow_short_would_change = (
+                regime_candidate_allow_short is not None
+                and regime_candidate_allow_short != config.allow_short
+            )
+            if not mode_would_change and not allow_short_would_change:
+                regime_reasons.append("research_candidate_already_applied")
+            else:
+                if mode_would_change:
+                    selected_regime_filter_mode = regime_candidate_mode
+                if allow_short_would_change:
+                    selected_allow_short = regime_candidate_allow_short
 
     env_updates: dict[str, str] = {}
     candidate_sources: list[str] = []
@@ -198,6 +215,9 @@ def tune_parameters(
     if selected_regime_filter_mode is not None:
         env_updates[REGIME_FILTER_ENV_KEY] = selected_regime_filter_mode
         candidate_sources.append("research_regime")
+    if selected_allow_short is not None:
+        env_updates[ALLOW_SHORT_ENV_KEY] = "1" if selected_allow_short else "0"
+        candidate_sources.append("research_entry_mode")
 
     reasons = list(common_reasons)
     if not env_updates:
@@ -211,11 +231,14 @@ def tune_parameters(
     applied = apply and not reasons
     updated_parameters = dict(current_parameters)
     updated_regime_filter_mode = config.regime_filter_mode
+    updated_allow_short = config.allow_short
     if applied:
         if selected_candidate_parameters is not None:
             updated_parameters = normalize_parameters(selected_candidate_parameters)
         if selected_regime_filter_mode is not None:
             updated_regime_filter_mode = selected_regime_filter_mode
+        if selected_allow_short is not None:
+            updated_allow_short = selected_allow_short
         update_env_file(env_file, env_updates)
 
     payload = {
@@ -240,6 +263,9 @@ def tune_parameters(
         "current_regime_filter_mode": config.regime_filter_mode,
         "candidate_regime_filter_mode": selected_regime_filter_mode,
         "regime_filter_mode_after": updated_regime_filter_mode,
+        "current_allow_short": config.allow_short,
+        "candidate_allow_short": selected_allow_short,
+        "allow_short_after": updated_allow_short,
         "strategy_diagnostics": strategy_diagnostics,
         "headroom_guard": {
             "needed": not bool(strategy_diagnostics.get("target_headroom_met", True)),
@@ -279,6 +305,8 @@ def tune_parameters(
             "eligible": research_recommendation.get("eligible", False),
             "candidate_name": research_candidate.get("name"),
             "candidate_mode": regime_candidate_mode or None,
+            "candidate_allow_short": regime_candidate_allow_short,
+            "candidate_entry_modes": research_candidate.get("entry_modes"),
             "candidate_trade_count": research_candidate.get("trade_count"),
             "delta_vs_baseline_rub": str(regime_delta_vs_baseline_rub),
             "apply_enabled": regime_apply_enabled,
@@ -353,6 +381,7 @@ def changed_env_keys(config: ScalperConfig, env_updates: dict[str, str]) -> list
 def current_env_values(config: ScalperConfig) -> dict[str, str]:
     current = parameter_env_updates(current_strategy_parameters(config))
     current[REGIME_FILTER_ENV_KEY] = config.regime_filter_mode
+    current[ALLOW_SHORT_ENV_KEY] = "1" if config.allow_short else "0"
     return current
 
 

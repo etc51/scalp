@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+from dataclasses import replace
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -16,29 +17,45 @@ from .optimizer import filter_snapshots_for_entry_window, resolve_snapshot_files
 REGIME_PREVIEW_MIN_TRADES = 3
 REGIME_FILTERS: list[dict[str, str]] = [
     {
-        "name": "baseline",
-        "description": "Без regime-filter.",
-        "mode": "baseline",
+        "name": "current_profile",
+        "description": "Текущий paper-профиль.",
+        "mode": "current",
     },
     {
-        "name": "non_bearish_prev_minute",
-        "description": "Разрешать вход только если предыдущая 1m-свеча не bearish.",
+        "name": "long_only_off",
+        "description": "Long-only без regime-filter.",
+        "mode": "off",
+        "allow_short": False,
+    },
+    {
+        "name": "long_only_non_bearish",
+        "description": "Long-only: предыдущая 1m-свеча не bearish.",
         "mode": "trend_not_bearish",
+        "allow_short": False,
     },
     {
-        "name": "bullish_prev_minute",
-        "description": "Разрешать вход только если предыдущая 1m-свеча bullish.",
+        "name": "long_only_bullish",
+        "description": "Long-only: предыдущая 1m-свеча bullish.",
         "mode": "trend_bullish",
+        "allow_short": False,
     },
     {
-        "name": "positive_macd_prev_minute",
-        "description": "Разрешать вход только если MACD histogram предыдущей 1m-свечи положительный.",
+        "name": "long_only_macd_positive",
+        "description": "Long-only: MACD histogram предыдущей 1m-свечи положительный.",
         "mode": "macd_positive",
+        "allow_short": False,
     },
     {
-        "name": "rsi_50_70_prev_minute",
-        "description": "Разрешать вход только если RSI14 предыдущей 1m-свечи в диапазоне 50-70.",
+        "name": "long_only_rsi_50_70",
+        "description": "Long-only: RSI14 предыдущей 1m-свечи в диапазоне 50-70.",
         "mode": "rsi_50_70",
+        "allow_short": False,
+    },
+    {
+        "name": "long_short_side_aware",
+        "description": "Long+short: trend filter учитывает сторону сигнала.",
+        "mode": "trend_side_aware",
+        "allow_short": True,
     },
 ]
 
@@ -199,7 +216,6 @@ def build_indicator_research(
     regime_replay = build_regime_replay(
         config,
         snapshots,
-        enriched_parts=enriched_parts,
         top_n=top_n,
     )
     summary = build_research_summary(
@@ -291,6 +307,7 @@ def build_research_focus(
                 "type": "regime_candidate",
                 "message": (
                     f"Лучший regime-filter preview: {candidate['name']} "
+                    f"[{candidate.get('entry_modes', '—')}] "
                     f"({candidate['delta_vs_baseline_rub']} RUB vs baseline)."
                 ),
             }
@@ -301,6 +318,7 @@ def build_research_focus(
                 "type": "regime_preview",
                 "message": (
                     f"Regime preview лидирует {candidate['name']}, но sample пока мал: "
+                    f"[{candidate.get('entry_modes', '—')}] "
                     f"{candidate['delta_vs_baseline_rub']} RUB vs baseline."
                 ),
             }
@@ -415,46 +433,21 @@ def build_regime_replay(
     config: ScalperConfig,
     snapshots: list[Any],
     *,
-    enriched_parts: list[Any],
     top_n: int,
 ) -> dict[str, Any]:
-    if not enriched_parts:
-        return {
-            "status": "no_indicator_frame",
-            "candidate_count": 0,
-            "baseline": None,
-            "top": [],
-            "recommendation": {
-                "eligible": False,
-                "reason": "no_indicator_frame",
-                "candidate": None,
-            },
-        }
-
-    enriched = enriched_parts[0] if len(enriched_parts) == 1 else __import__("pandas").concat(enriched_parts, ignore_index=True)
-    regime_lookup = {
-        str(row["snapshot_key"]): {
-            "trend_label": row["trend_label"],
-            "rsi14": _coerce_float(row["rsi14"]),
-            "ema_gap_bps": _coerce_float(row["ema_gap_bps"]),
-            "macd_hist": _coerce_float(row["macd_hist"]),
-        }
-        for _, row in enriched.iterrows()
-    }
-
     results: list[dict[str, Any]] = []
     baseline_result: dict[str, Any] | None = None
+    seen_profiles: set[str] = set()
     for candidate in REGIME_FILTERS:
-        if candidate["mode"] == "baseline":
-            raw = simulate_candidate(config, snapshots)
-        else:
-            raw = simulate_candidate(
-                config,
-                snapshots,
-                entry_filter=make_regime_gate(candidate, regime_lookup),
-            )
-        item = summarize_regime_candidate(candidate, raw)
-        if candidate["mode"] == "baseline":
+        candidate_config = build_regime_candidate_config(config, candidate)
+        profile_signature = build_regime_profile_signature(candidate_config)
+        if profile_signature in seen_profiles:
+            continue
+        seen_profiles.add(profile_signature)
+
+        raw = simulate_candidate(candidate_config, snapshots)
+        item = summarize_regime_candidate(candidate, raw, candidate_config=candidate_config)
+        if candidate["name"] == "current_profile":
             baseline_result = item
         results.append(item)
 
@@ -473,39 +466,34 @@ def build_regime_replay(
     }
 
 
-def make_regime_gate(candidate: dict[str, str], regime_lookup: dict[str, dict[str, Any]]):
-    mode = candidate["mode"]
-    reason_prefix = candidate["name"]
-
-    def gate(snapshot: Any, _signal: Any) -> tuple[bool, str | None]:
-        state = regime_lookup.get(build_snapshot_key(snapshot))
-        if state is None:
-            return False, f"regime_{reason_prefix}_missing"
-        if state.get("trend_label") is None and state.get("rsi14") is None and state.get("macd_hist") is None:
-            return False, f"regime_{reason_prefix}_warmup"
-        if mode == "trend_not_bearish":
-            return (state.get("trend_label") != "bearish", f"regime_{reason_prefix}_bearish")
-        if mode == "trend_bullish":
-            return (state.get("trend_label") == "bullish", f"regime_{reason_prefix}_not_bullish")
-        if mode == "macd_positive":
-            macd_hist = state.get("macd_hist")
-            return (macd_hist is not None and macd_hist > 0, f"regime_{reason_prefix}_macd_non_positive")
-        if mode == "rsi_50_70":
-            rsi14 = state.get("rsi14")
-            return (
-                rsi14 is not None and 50 <= rsi14 <= 70,
-                f"regime_{reason_prefix}_rsi_out_of_band",
-            )
-        return True, None
-
-    return gate
+def build_regime_candidate_config(config: ScalperConfig, candidate: dict[str, Any]) -> ScalperConfig:
+    if candidate["name"] == "current_profile":
+        return config
+    allow_short = candidate.get("allow_short")
+    return replace(
+        config,
+        regime_filter_mode=str(candidate["mode"]),
+        allow_short=config.allow_short if allow_short is None else bool(allow_short),
+    )
 
 
-def summarize_regime_candidate(candidate: dict[str, str], raw: dict[str, Any]) -> dict[str, Any]:
+def build_regime_profile_signature(config: ScalperConfig) -> str:
+    return f"{config.regime_filter_mode}|{int(config.allow_short)}"
+
+
+def summarize_regime_candidate(
+    candidate: dict[str, Any],
+    raw: dict[str, Any],
+    *,
+    candidate_config: ScalperConfig,
+) -> dict[str, Any]:
     return {
         "name": candidate["name"],
         "description": candidate["description"],
-        "mode": candidate["mode"],
+        "mode": candidate_config.regime_filter_mode,
+        "allow_short": candidate_config.allow_short,
+        "entry_modes": "long+short" if candidate_config.allow_short else "long_only",
+        "is_baseline": candidate["name"] == "current_profile",
         "trade_count": int(raw.get("trade_count", 0)),
         "wins": int(raw.get("wins", 0)),
         "losses": int(raw.get("losses", 0)),
@@ -537,7 +525,7 @@ def build_regime_recommendation(
     *,
     baseline: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    non_baseline = [item for item in ranked if item.get("name") != "baseline"]
+    non_baseline = [item for item in ranked if not item.get("is_baseline", False)]
     if not non_baseline:
         return {"eligible": False, "reason": "no_candidates", "candidate": None}
     top = non_baseline[0]
@@ -549,6 +537,7 @@ def build_regime_recommendation(
     if delta <= 0:
         return {"eligible": False, "reason": "no_positive_delta_vs_baseline", "candidate": top}
     return {"eligible": True, "reason": "best_positive_regime_filter", "candidate": top}
+
 
 def maybe_write_report(runtime_dir: Path, payload: dict[str, Any], *, enabled: bool) -> None:
     if not enabled:

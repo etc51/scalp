@@ -546,6 +546,9 @@ HTML = """<!doctype html>
           ["Regime Before", tuning.current_regime_filter_mode || "—"],
           ["Regime Candidate", tuning.candidate_regime_filter_mode || "—"],
           ["Regime After", tuning.regime_filter_mode_after || "—"],
+          ["Short Before", tuning.current_allow_short === undefined ? "—" : String(tuning.current_allow_short)],
+          ["Short Candidate", tuning.candidate_allow_short === undefined || tuning.candidate_allow_short === null ? "—" : String(tuning.candidate_allow_short)],
+          ["Short After", tuning.allow_short_after === undefined ? "—" : String(tuning.allow_short_after)],
           ["Open Positions", fmtNum(tuning.open_positions, 0)],
           ["Analysis Trades", fmtNum(tuning.analysis?.trade_count || 0, 0)],
           ["Analysis Assessment", tuning.analysis?.assessment || "—"],
@@ -742,18 +745,18 @@ HTML = """<!doctype html>
       if (!replay || !rows.length) return '<div class="empty">Пока нет regime-replay</div>';
       const recommendation = replay?.recommendation || null;
       const lead = recommendation?.candidate
-        ? `<div class="empty">recommendation: ${recommendation.reason || "—"} | lead: ${recommendation.candidate.name} | delta vs baseline: ${fmtRub(recommendation.candidate.delta_vs_baseline_rub)}</div>`
+        ? `<div class="empty">recommendation: ${recommendation.reason || "—"} | lead: ${recommendation.candidate.name} [${recommendation.candidate.entry_modes || "—"}] | delta vs baseline: ${fmtRub(recommendation.candidate.delta_vs_baseline_rub)}</div>`
         : `<div class="empty">recommendation: ${recommendation?.reason || "—"}</div>`;
       return (
         `<div class="subhead">Regime Replay</div>` +
         lead +
         renderTable(
-          ["Filter", "Trades", "Signals", "Filtered", "Win Rate", "Net PnL", "Delta", "PF"],
+          ["Filter", "Profile", "Trades", "Signals", "Win Rate", "Net PnL", "Delta", "PF"],
           rows.map((item) => [
             item.name,
+            item.entry_modes || "—",
             fmtNum(item.trade_count, 0),
             fmtNum(item.signals_detected, 0),
-            fmtNum(item.filtered_signal_count, 0),
             fmtNum(item.win_rate_pct, 2) + " %",
             `<span class="${pnlClass(item.net_pnl_rub)}">${fmtRub(item.net_pnl_rub)}</span>`,
             `<span class="${pnlClass(item.delta_vs_baseline_rub)}">${fmtRub(item.delta_vs_baseline_rub)}</span>`,
