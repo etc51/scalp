@@ -9,6 +9,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .commission import DEFAULT_PREMIUM_SHARE_COMMISSION_BPS
+from .strategy_overlay import ALLOWED_STRATEGY_OVERLAY_MODES
 
 
 TRACKED_PAPER_PROFILE_PATH = Path("config") / "paper_profile.env"
@@ -32,6 +33,7 @@ TRACKED_STRATEGY_PROFILE_KEYS = frozenset(
         "SCALPER_TARGET_NET_TAKE_PROFIT_BUFFER_BPS",
         "SCALPER_COOLDOWN_SECONDS",
         "SCALPER_REGIME_FILTER_MODE",
+        "SCALPER_STRATEGY_OVERLAY_MODE",
         "SCALPER_INTRADAY_TICKER_LOSS_LIMIT_RUB",
         "SCALPER_INTRADAY_TICKER_MAX_CONSECUTIVE_LOSSES",
         "SCALPER_INTRADAY_TICKER_MAX_CONSECUTIVE_TIME_STOP_LOSSES",
@@ -179,6 +181,16 @@ def parse_regime_filter_mode(value: str | None, default: str = "off") -> str:
     return candidate
 
 
+def parse_strategy_overlay_mode(value: str | None, default: str = "off") -> str:
+    candidate = (value or default).strip().lower() or default
+    if candidate not in ALLOWED_STRATEGY_OVERLAY_MODES:
+        raise SystemExit(
+            "Invalid SCALPER_STRATEGY_OVERLAY_MODE. Expected one of: "
+            + ", ".join(sorted(ALLOWED_STRATEGY_OVERLAY_MODES))
+        )
+    return candidate
+
+
 @dataclass(slots=True, frozen=True)
 class ScalperConfig:
     token: str
@@ -207,6 +219,7 @@ class ScalperConfig:
     min_net_take_profit_bps: Decimal
     target_net_take_profit_buffer_bps: Decimal
     regime_filter_mode: str
+    strategy_overlay_mode: str
     premium_share_commission_bps: Decimal
     paper_initial_cash_rub: Decimal
     paper_max_gross_leverage: Decimal
@@ -289,9 +302,13 @@ def load_config(args: argparse.Namespace, *, require_auth: bool = True) -> Scalp
             0,
             int(os.getenv("SCALPER_INTRADAY_TICKER_MAX_CONSECUTIVE_TIME_STOP_LOSSES", "0")),
         ),
-        intraday_session_max_guarded_tickers=max(
-            0,
-            int(os.getenv("SCALPER_INTRADAY_SESSION_MAX_GUARDED_TICKERS", "0")),
+        intraday_session_max_guarded_tickers=(
+            0
+            if args.mode == "paper"
+            else max(
+                0,
+                int(os.getenv("SCALPER_INTRADAY_SESSION_MAX_GUARDED_TICKERS", "0")),
+            )
         ),
         cooldown_seconds=float(os.getenv("SCALPER_COOLDOWN_SECONDS", "12")),
         time_stop_seconds=float(os.getenv("SCALPER_TIME_STOP_SECONDS", "8")),
@@ -307,6 +324,9 @@ def load_config(args: argparse.Namespace, *, require_auth: bool = True) -> Scalp
             os.getenv("SCALPER_TARGET_NET_TAKE_PROFIT_BUFFER_BPS", "2")
         ),
         regime_filter_mode=parse_regime_filter_mode(os.getenv("SCALPER_REGIME_FILTER_MODE", "off")),
+        strategy_overlay_mode=parse_strategy_overlay_mode(
+            os.getenv("SCALPER_STRATEGY_OVERLAY_MODE", "off")
+        ),
         premium_share_commission_bps=Decimal(
             os.getenv("SCALPER_PREMIUM_SHARE_COMMISSION_BPS", str(DEFAULT_PREMIUM_SHARE_COMMISSION_BPS))
         ),

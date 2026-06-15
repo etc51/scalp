@@ -410,6 +410,22 @@ def score_tuning_action(
         score += Decimal("30")
         details["score_components"].append("research_regime=30")
         details["selection_reason"] = details["selection_reason"] or "research_regime"
+    if "research_strategy_overlay" in sources:
+        score += Decimal("40")
+        details["score_components"].append("research_strategy_overlay=40")
+        overlay_delta = _decimal(
+            (((payload.get("research") or {}).get("strategy_overlay_delta_vs_baseline_rub"))),
+            default="0",
+        )
+        overlay_trade_count = int(
+            (((payload.get("research") or {}).get("strategy_overlay_candidate_trade_count", 0)) or 0)
+        )
+        overlay_delta_score = min(max(overlay_delta, Decimal("0")) / Decimal("20"), Decimal("25"))
+        overlay_trade_score = min(Decimal(overlay_trade_count), Decimal("15"))
+        score += overlay_delta_score + overlay_trade_score
+        details["score_components"].append(f"strategy_overlay_delta={_fmt_decimal(overlay_delta_score)}")
+        details["score_components"].append(f"strategy_overlay_trades={_fmt_decimal(overlay_trade_score)}")
+        details["selection_reason"] = details["selection_reason"] or "research_strategy_overlay"
 
     scope_penalty = max(0, changed_count - 1) * 6
     combo_penalty = max(0, len(sources) - 1) * 5

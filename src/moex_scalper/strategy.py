@@ -9,14 +9,18 @@ from .commission import CommissionModel
 from .config import ScalperConfig
 from .domain import EntrySignal, ExitDecision, MarketSnapshot, Position, Side
 from .indicators import compute_indicator_state
+from .strategy_overlay import MinuteBar, compute_overlay_indicator_state, evaluate_strategy_overlay
 
 
 @dataclass(slots=True)
 class InstrumentMomentumState:
     history: deque[tuple[object, Decimal]] = field(default_factory=deque)
     current_minute_at: object | None = None
+    current_minute_open: Decimal | None = None
+    current_minute_high: Decimal | None = None
+    current_minute_low: Decimal | None = None
     current_minute_close: Decimal | None = None
-    completed_minute_closes: deque[Decimal] = field(default_factory=lambda: deque(maxlen=64))
+    completed_minute_bars: deque[MinuteBar] = field(default_factory=lambda: deque(maxlen=128))
 
 
 class ModerateScalpingStrategy:
@@ -111,6 +115,14 @@ class ModerateScalpingStrategy:
         if not regime_allowed:
             return None, regime_reason, metrics
 
+        overlay_allowed, overlay_reason, overlay_metrics = self._check_strategy_overlay(
+            state,
+            signal_side=signal_side,
+        )
+        metrics.update(overlay_metrics)
+        if not overlay_allowed:
+            return None, overlay_reason, metrics
+
         reason = (
             f"side={signal_side.value} impulse_bps={impulse_bps:.2f} spread_bps={snapshot.spread_bps:.2f} "
             f"imbalance={snapshot.imbalance:.3f} net_tp_bps={net_take_profit_bps:.2f}"
@@ -160,16 +172,38 @@ class ModerateScalpingStrategy:
         mid_price = snapshot.mid_price
         if state.current_minute_at is None:
             state.current_minute_at = local_minute
+            state.current_minute_open = mid_price
+            state.current_minute_high = mid_price
+            state.current_minute_low = mid_price
             state.current_minute_close = mid_price
             return
 
         if local_minute == state.current_minute_at:
+            state.current_minute_high = max(state.current_minute_high or mid_price, mid_price)
+            state.current_minute_low = min(state.current_minute_low or mid_price, mid_price)
             state.current_minute_close = mid_price
             return
 
-        if state.current_minute_close is not None:
-            state.completed_minute_closes.append(state.current_minute_close)
+        if (
+            state.current_minute_open is not None
+            and state.current_minute_high is not None
+            and state.current_minute_low is not None
+            and state.current_minute_close is not None
+            and state.current_minute_at is not None
+        ):
+            state.completed_minute_bars.append(
+                MinuteBar(
+                    at=state.current_minute_at,
+                    open=state.current_minute_open,
+                    high=state.current_minute_high,
+                    low=state.current_minute_low,
+                    close=state.current_minute_close,
+                )
+            )
         state.current_minute_at = local_minute
+        state.current_minute_open = mid_price
+        state.current_minute_high = mid_price
+        state.current_minute_low = mid_price
         state.current_minute_close = mid_price
 
     def _check_regime_filter(
@@ -186,7 +220,8 @@ class ModerateScalpingStrategy:
         if mode == "off":
             return True, "ok", metrics
 
-        indicator_state = compute_indicator_state(list(state.completed_minute_closes))
+        completed_closes = [bar.close for bar in state.completed_minute_bars]
+        indicator_state = compute_indicator_state(completed_closes)
         trend_label = indicator_state.get("trend_label")
         rsi14 = indicator_state.get("rsi14")
         macd_hist = indicator_state.get("macd_hist")
@@ -232,4 +267,32 @@ class ModerateScalpingStrategy:
                 return False, "regime_prev_minute_rsi_out_of_band", metrics
             return True, "ok", metrics
 
+        return True, "ok", metrics
+
+    def _check_strategy_overlay(
+        self,
+        state: InstrumentMomentumState,
+        *,
+        signal_side: Side,
+    ) -> tuple[bool, str, dict[str, Decimal | str]]:
+        mode = self._config.strategy_overlay_mode
+        metrics: dict[str, Decimal | str] = {
+            "strategy_overlay_mode": mode,
+            "strategy_overlay_signal_side": signal_side.value,
+        }
+        if mode == "off":
+            return True, "ok", metrics
+
+        if not state.completed_minute_bars:
+            return False, "strategy_overlay_prev_minute_warmup", metrics
+
+        indicator_state = compute_overlay_indicator_state(list(state.completed_minute_bars))
+        allowed, reason, overlay_metrics = evaluate_strategy_overlay(
+            mode,
+            indicator_state=indicator_state,
+            signal_side=signal_side,
+        )
+        metrics.update(overlay_metrics)
+        if not allowed:
+            return False, str(reason or "strategy_overlay_blocked"), metrics
         return True, "ok", metrics

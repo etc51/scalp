@@ -249,10 +249,6 @@ def build_indicator_research(
         )
 
     ticker_reports.sort(key=lambda item: item["ticker"])
-    indicator_lookup = build_indicator_lookup(
-        enriched_parts,
-        pd_module=pd,
-    )
     regime_replay = build_regime_replay(
         config,
         snapshots,
@@ -261,7 +257,6 @@ def build_indicator_research(
     strategy_lab = build_strategy_lab(
         config,
         snapshots,
-        indicator_lookup=indicator_lookup,
         top_n=top_n,
     )
     summary = build_research_summary(
@@ -626,21 +621,12 @@ def build_strategy_lab(
     config: ScalperConfig,
     snapshots: list[Any],
     *,
-    indicator_lookup: dict[str, dict[str, Any]],
     top_n: int,
 ) -> dict[str, Any]:
-    if not indicator_lookup:
-        return {
-            "status": "indicator_lookup_empty",
-            "candidate_count": 0,
-            "baseline": None,
-            "top": [],
-            "recommendation": {"eligible": False, "reason": "indicator_lookup_empty", "candidate": None},
-        }
-
     baseline_config = replace(
         config,
         regime_filter_mode="off",
+        strategy_overlay_mode="off",
     )
     baseline_raw = simulate_candidate(
         baseline_config,
@@ -663,14 +649,7 @@ def build_strategy_lab(
     results = [baseline_item]
     for candidate in STRATEGY_IDEAS:
         candidate_config = build_strategy_lab_candidate_config(config, candidate)
-        raw = simulate_candidate(
-            candidate_config,
-            snapshots,
-            entry_filter=build_strategy_entry_filter(
-                str(candidate.get("overlay_mode") or ""),
-                indicator_lookup=indicator_lookup,
-            ),
-        )
+        raw = simulate_candidate(candidate_config, snapshots)
         results.append(
             summarize_strategy_candidate(
                 candidate,
@@ -704,6 +683,7 @@ def build_strategy_lab_candidate_config(
     return replace(
         config,
         regime_filter_mode="off",
+        strategy_overlay_mode=str(candidate.get("overlay_mode") or "off"),
         allow_short=bool(candidate.get("allow_short", False)),
     )
 
@@ -723,6 +703,7 @@ def summarize_strategy_candidate(
         "allow_short": candidate_config.allow_short,
         "entry_modes": "long+short" if candidate_config.allow_short else "long_only",
         "regime_filter_mode": candidate_config.regime_filter_mode,
+        "strategy_overlay_mode": candidate_config.strategy_overlay_mode,
         "is_baseline": is_baseline,
         "trade_count": int(raw.get("trade_count", 0)),
         "wins": int(raw.get("wins", 0)),

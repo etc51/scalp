@@ -22,6 +22,7 @@ PARAMETER_ENV_MAP: dict[str, str] = {
     "cooldown_seconds": "SCALPER_COOLDOWN_SECONDS",
 }
 REGIME_FILTER_ENV_KEY = "SCALPER_REGIME_FILTER_MODE"
+STRATEGY_OVERLAY_ENV_KEY = "SCALPER_STRATEGY_OVERLAY_MODE"
 ALLOW_SHORT_ENV_KEY = "SCALPER_ALLOW_SHORT"
 EXPECTED_EDGE_STEPS = (Decimal("4"), Decimal("6"), Decimal("8"), Decimal("10"), Decimal("12"), Decimal("14"))
 IMPULSE_STEPS = (Decimal("1.0"), Decimal("1.5"), Decimal("2.5"), Decimal("4.0"))
@@ -84,13 +85,26 @@ def tune_parameters(
     research_recommendation = dict((((research_payload or {}).get("regime_replay") or {}).get("recommendation") or {}))
     research_candidate = dict(research_recommendation.get("candidate") or {})
     research_candidate_allow_short = research_candidate.get("allow_short")
+    strategy_lab_recommendation = dict((((research_payload or {}).get("strategy_lab") or {}).get("recommendation") or {}))
+    strategy_lab_candidate = dict(strategy_lab_recommendation.get("candidate") or {})
+    strategy_lab_candidate_allow_short = strategy_lab_candidate.get("allow_short")
 
     enabled = parse_bool(_env_value("SCALPER_AUTO_TUNE_ENABLED"), default=True)
     regime_apply_enabled = parse_bool(_env_value("SCALPER_AUTO_APPLY_REGIME_FILTER", "1"), default=True)
+    strategy_overlay_apply_enabled = parse_bool(
+        _env_value("SCALPER_AUTO_APPLY_STRATEGY_OVERLAY", "1"),
+        default=True,
+    )
     coverage_fallback_enabled = parse_bool(_env_value("SCALPER_AUTO_TUNE_USE_COVERAGE_FALLBACK", "1"), default=True)
     min_trades = int(_env_value("SCALPER_AUTO_TUNE_MIN_TRADES", "8"))
     min_delta_rub = Decimal(_env_value("SCALPER_AUTO_TUNE_MIN_DELTA_RUB", "0"))
     min_regime_delta_rub = Decimal(_env_value("SCALPER_AUTO_TUNE_MIN_REGIME_DELTA_RUB", "0"))
+    min_strategy_overlay_trades = int(
+        _env_value("SCALPER_AUTO_TUNE_MIN_STRATEGY_OVERLAY_TRADES", str(min_trades))
+    )
+    min_strategy_overlay_delta_rub = Decimal(
+        _env_value("SCALPER_AUTO_TUNE_MIN_STRATEGY_OVERLAY_DELTA_RUB", "0")
+    )
     coverage_min_snapshots = int(_env_value("SCALPER_AUTO_TUNE_COVERAGE_MIN_SNAPSHOTS", "500"))
     coverage_max_ready_rate_pct = Decimal(_env_value("SCALPER_AUTO_TUNE_COVERAGE_MAX_READY_RATE_PCT", "0.10"))
     coverage_min_block_share_pct = Decimal(
@@ -104,6 +118,9 @@ def tune_parameters(
     analysis_trade_count = int(((analysis_payload or {}).get("summary") or {}).get("trade_count", 0))
     delta_vs_baseline_rub = Decimal(str(recommendation.get("delta_vs_baseline_rub", "0")))
     regime_delta_vs_baseline_rub = Decimal(str(research_candidate.get("delta_vs_baseline_rub", "0")))
+    strategy_overlay_delta_vs_baseline_rub = Decimal(
+        str(strategy_lab_candidate.get("delta_vs_baseline_rub", "0"))
+    )
     analysis_status = str((analysis_payload or {}).get("status") or "missing")
 
     coverage_candidate_parameters, coverage_fallback = build_coverage_unblocker_candidate(
@@ -171,6 +188,8 @@ def tune_parameters(
 
     regime_reasons: list[str] = []
     selected_regime_filter_mode: str | None = None
+    selected_regime_source: str | None = None
+    selected_strategy_overlay_mode: str | None = None
     selected_allow_short: bool | None = None
     if not regime_apply_enabled:
         regime_reasons.append("regime_autotune_disabled")
@@ -202,8 +221,57 @@ def tune_parameters(
             else:
                 if mode_would_change:
                     selected_regime_filter_mode = regime_candidate_mode
+                    selected_regime_source = "research_regime"
                 if allow_short_would_change:
                     selected_allow_short = regime_candidate_allow_short
+
+    strategy_overlay_reasons: list[str] = []
+    overlay_candidate_mode = str(
+        strategy_lab_candidate.get("strategy_overlay_mode")
+        or strategy_lab_candidate.get("overlay_mode")
+        or ""
+    ).strip()
+    overlay_candidate_allow_short = (
+        None
+        if strategy_lab_candidate_allow_short is None
+        else bool(strategy_lab_candidate_allow_short)
+    )
+    overlay_candidate_trade_count = int(strategy_lab_candidate.get("trade_count", 0) or 0)
+    if not strategy_overlay_apply_enabled:
+        strategy_overlay_reasons.append("strategy_overlay_autotune_disabled")
+    if research_payload is None:
+        strategy_overlay_reasons.append("missing_research_report")
+    elif research_payload.get("status") != "ok":
+        strategy_overlay_reasons.append(f"research_{research_payload.get('status', 'unknown')}")
+    elif not strategy_lab_recommendation.get("eligible", False):
+        strategy_overlay_reasons.append(
+            f"strategy_lab_{strategy_lab_recommendation.get('reason', 'not_eligible')}"
+        )
+    if not strategy_overlay_reasons:
+        if not overlay_candidate_mode or overlay_candidate_mode == "baseline":
+            strategy_overlay_reasons.append("missing_strategy_overlay_candidate_mode")
+        elif overlay_candidate_trade_count < min_strategy_overlay_trades:
+            strategy_overlay_reasons.append("strategy_overlay_insufficient_trade_sample")
+        elif strategy_overlay_delta_vs_baseline_rub < min_strategy_overlay_delta_rub:
+            strategy_overlay_reasons.append("strategy_overlay_delta_below_threshold")
+        else:
+            overlay_would_change = overlay_candidate_mode != config.strategy_overlay_mode
+            allow_short_would_change = (
+                overlay_candidate_allow_short is not None
+                and overlay_candidate_allow_short != config.allow_short
+            )
+            regime_reset_would_change = config.regime_filter_mode != "off"
+            if not overlay_would_change and not allow_short_would_change and not regime_reset_would_change:
+                strategy_overlay_reasons.append("strategy_overlay_candidate_already_applied")
+            else:
+                if overlay_would_change:
+                    selected_strategy_overlay_mode = overlay_candidate_mode
+                if allow_short_would_change:
+                    selected_allow_short = overlay_candidate_allow_short
+                if regime_reset_would_change:
+                    selected_regime_filter_mode = "off"
+                    selected_regime_source = "research_strategy_overlay"
+                regime_reasons.append("strategy_overlay_preferred")
 
     env_updates: dict[str, str] = {}
     candidate_sources: list[str] = []
@@ -214,7 +282,10 @@ def tune_parameters(
         candidate_signature = parameter_signature(selected_candidate_parameters)
     if selected_regime_filter_mode is not None:
         env_updates[REGIME_FILTER_ENV_KEY] = selected_regime_filter_mode
-        candidate_sources.append("research_regime")
+        candidate_sources.append(selected_regime_source or "research_regime")
+    if selected_strategy_overlay_mode is not None:
+        env_updates[STRATEGY_OVERLAY_ENV_KEY] = selected_strategy_overlay_mode
+        candidate_sources.append("research_strategy_overlay")
     if selected_allow_short is not None:
         env_updates[ALLOW_SHORT_ENV_KEY] = "1" if selected_allow_short else "0"
         candidate_sources.append("research_entry_mode")
@@ -223,6 +294,7 @@ def tune_parameters(
     if not env_updates:
         reasons.extend(optimizer_reasons)
         reasons.extend(regime_reasons)
+        reasons.extend(strategy_overlay_reasons)
 
     changed_keys = changed_env_keys(config, env_updates)
     if env_updates and not changed_keys:
@@ -231,12 +303,15 @@ def tune_parameters(
     applied = apply and not reasons
     updated_parameters = dict(current_parameters)
     updated_regime_filter_mode = config.regime_filter_mode
+    updated_strategy_overlay_mode = config.strategy_overlay_mode
     updated_allow_short = config.allow_short
     if applied:
         if selected_candidate_parameters is not None:
             updated_parameters = normalize_parameters(selected_candidate_parameters)
         if selected_regime_filter_mode is not None:
             updated_regime_filter_mode = selected_regime_filter_mode
+        if selected_strategy_overlay_mode is not None:
+            updated_strategy_overlay_mode = selected_strategy_overlay_mode
         if selected_allow_short is not None:
             updated_allow_short = selected_allow_short
         update_env_file(env_file, env_updates)
@@ -254,7 +329,7 @@ def tune_parameters(
         "open_positions": open_positions,
         "current_signature": current_signature,
         "candidate_signature": candidate_signature,
-        "candidate_source": "+".join(candidate_sources) if candidate_sources else None,
+        "candidate_source": "+".join(dict.fromkeys(candidate_sources)) if candidate_sources else None,
         "candidate_env_updates": env_updates or None,
         "current_parameters": current_parameters,
         "candidate_parameters": normalize_parameters(selected_candidate_parameters) if selected_candidate_parameters else None,
@@ -263,6 +338,9 @@ def tune_parameters(
         "current_regime_filter_mode": config.regime_filter_mode,
         "candidate_regime_filter_mode": selected_regime_filter_mode,
         "regime_filter_mode_after": updated_regime_filter_mode,
+        "current_strategy_overlay_mode": config.strategy_overlay_mode,
+        "candidate_strategy_overlay_mode": selected_strategy_overlay_mode,
+        "strategy_overlay_mode_after": updated_strategy_overlay_mode,
         "current_allow_short": config.allow_short,
         "candidate_allow_short": selected_allow_short,
         "allow_short_after": updated_allow_short,
@@ -310,6 +388,15 @@ def tune_parameters(
             "candidate_trade_count": research_candidate.get("trade_count"),
             "delta_vs_baseline_rub": str(regime_delta_vs_baseline_rub),
             "apply_enabled": regime_apply_enabled,
+            "strategy_overlay_recommendation_reason": strategy_lab_recommendation.get("reason"),
+            "strategy_overlay_eligible": strategy_lab_recommendation.get("eligible", False),
+            "strategy_overlay_candidate_name": strategy_lab_candidate.get("name"),
+            "strategy_overlay_candidate_mode": overlay_candidate_mode or None,
+            "strategy_overlay_candidate_allow_short": overlay_candidate_allow_short,
+            "strategy_overlay_candidate_entry_modes": strategy_lab_candidate.get("entry_modes"),
+            "strategy_overlay_candidate_trade_count": overlay_candidate_trade_count,
+            "strategy_overlay_delta_vs_baseline_rub": str(strategy_overlay_delta_vs_baseline_rub),
+            "strategy_overlay_apply_enabled": strategy_overlay_apply_enabled,
         },
         "next_action": build_next_action(apply=apply, applied=applied, reasons=reasons),
         "service_restart_required": applied,
@@ -381,6 +468,7 @@ def changed_env_keys(config: ScalperConfig, env_updates: dict[str, str]) -> list
 def current_env_values(config: ScalperConfig) -> dict[str, str]:
     current = parameter_env_updates(current_strategy_parameters(config))
     current[REGIME_FILTER_ENV_KEY] = config.regime_filter_mode
+    current[STRATEGY_OVERLAY_ENV_KEY] = config.strategy_overlay_mode
     current[ALLOW_SHORT_ENV_KEY] = "1" if config.allow_short else "0"
     return current
 
@@ -603,6 +691,8 @@ def build_next_action(*, apply: bool, applied: bool, reasons: list[str]) -> str:
         return "collect_in_window_market_data"
     if "insufficient_trade_sample" in reasons:
         return "collect_more_paper_trades"
+    if any(reason.startswith("strategy_lab_") or reason.startswith("strategy_overlay_") for reason in reasons):
+        return "wait_for_better_strategy_overlay_candidate"
     if any(reason.startswith("research_") for reason in reasons):
         return "wait_for_better_regime_candidate"
     if any(reason.startswith("optimizer_") for reason in reasons):
