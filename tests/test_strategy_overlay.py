@@ -63,6 +63,24 @@ class StrategyOverlayTests(unittest.TestCase):
         self.assertTrue(allowed)
         self.assertEqual(reason, "ok")
 
+    def test_adaptive_twap_trend_allows_bullish_twap_alignment(self) -> None:
+        allowed, reason, _ = evaluate_strategy_overlay(
+            "adaptive_twap_trend",
+            indicator_state={
+                "trend_label": "bullish",
+                "rsi14": Decimal("58"),
+                "ema_gap_bps": Decimal("7"),
+                "macd_hist": Decimal("0.5"),
+                "bb_pos": Decimal("0.55"),
+                "session_twap_gap_bps": Decimal("3.2"),
+                "atr14_bps": Decimal("6"),
+            },
+            signal_side=Side.BUY,
+        )
+
+        self.assertTrue(allowed)
+        self.assertEqual(reason, "ok")
+
     def test_opening_range_breakdown_short_requires_bearish_breakdown(self) -> None:
         allowed, reason, _ = evaluate_strategy_overlay(
             "opening_range_breakdown_short",

@@ -62,6 +62,14 @@ REGIME_FILTERS: list[dict[str, str]] = [
 ]
 STRATEGY_IDEAS: list[dict[str, Any]] = [
     {
+        "name": "adaptive_twap_trend",
+        "description": "Adaptive-only context filter: trend + EMA/MACD + intraday TWAP alignment with ATR floor.",
+        "family": "adaptive_context",
+        "entry_modes": "long+short",
+        "allow_short": True,
+        "overlay_mode": "adaptive_twap_trend",
+    },
+    {
         "name": "trend_pullback_long",
         "description": "Trend pullback: EMA gap + MACD + умеренный RSI + средняя позиция в Bollinger.",
         "family": "trend_pullback",
@@ -215,7 +223,12 @@ def build_indicator_research(
 
         indicator_backend = "pandas_ta"
     except ImportError:
-        pandas_ta = None
+        try:
+            import pandas_ta_classic as pandas_ta  # type: ignore
+
+            indicator_backend = "pandas_ta_classic"
+        except ImportError:
+            pandas_ta = None
 
     ticker_reports: list[dict[str, Any]] = []
     enriched_parts: list[Any] = []
@@ -821,6 +834,8 @@ def build_strategy_entry_filter(
     indicator_lookup: dict[str, dict[str, Any]],
 ):
     def entry_filter(snapshot: Any, signal: Any) -> tuple[bool, str | None]:
+        if overlay_mode == "adaptive_twap_trend" and getattr(signal, "profile", None) != "adaptive":
+            return True, None
         indicator_state = indicator_lookup.get(build_snapshot_key(snapshot))
         if indicator_state is None:
             return False, "strategy_lab_missing_indicator_state"
@@ -846,9 +861,42 @@ def evaluate_strategy_overlay(
     bb_pos = _coerce_float(indicator_state.get("bb_pos"))
     stoch_k = _coerce_float(indicator_state.get("stoch_k"))
     session_return_bps = _coerce_float(indicator_state.get("session_return_bps"))
+    session_twap_gap_bps = _coerce_float(indicator_state.get("session_twap_gap_bps"))
+    atr14_bps = _coerce_float(indicator_state.get("atr14_bps"))
     opening_range_breakout_bps = _coerce_float(indicator_state.get("opening_range_breakout_bps"))
     opening_range_breakdown_bps = _coerce_float(indicator_state.get("opening_range_breakdown_bps"))
     opening_range_ready = _as_bool(indicator_state.get("opening_range_ready"))
+
+    if overlay_mode == "adaptive_twap_trend":
+        if atr14_bps is None or atr14_bps < 4.0:
+            return False, "strategy_lab_atr_too_low"
+        if signal_side is Side.BUY:
+            if trend_label != "bullish":
+                return False, "strategy_lab_trend_not_bullish"
+            if ema_gap_bps is None or ema_gap_bps <= 0:
+                return False, "strategy_lab_ema_gap_not_positive"
+            if macd_hist is None or macd_hist <= 0:
+                return False, "strategy_lab_macd_not_positive"
+            if not _between(rsi14, 48, 72):
+                return False, "strategy_lab_rsi_not_adaptive_long_band"
+            if session_twap_gap_bps is None or not _between(session_twap_gap_bps, 0.25, 10.0):
+                return False, "strategy_lab_twap_gap_not_adaptive_long_band"
+            if not _between(bb_pos, 0.20, 0.90):
+                return False, "strategy_lab_bb_not_adaptive_long_band"
+            return True, None
+        if trend_label != "bearish":
+            return False, "strategy_lab_trend_not_bearish"
+        if ema_gap_bps is None or ema_gap_bps >= 0:
+            return False, "strategy_lab_ema_gap_not_negative"
+        if macd_hist is None or macd_hist >= 0:
+            return False, "strategy_lab_macd_not_negative"
+        if not _between(rsi14, 28, 55):
+            return False, "strategy_lab_rsi_not_adaptive_short_band"
+        if session_twap_gap_bps is None or not _between(session_twap_gap_bps, -10.0, -0.25):
+            return False, "strategy_lab_twap_gap_not_adaptive_short_band"
+        if not _between(bb_pos, 0.10, 0.80):
+            return False, "strategy_lab_bb_not_adaptive_short_band"
+        return True, None
 
     if overlay_mode == "trend_pullback_long":
         if signal_side is not Side.BUY:
@@ -909,7 +957,6 @@ def evaluate_strategy_overlay(
         return True, None
 
     if overlay_mode == "opening_range_breakdown_short":
-        atr14_bps = _coerce_float(indicator_state.get("atr14_bps"))
         if signal_side is not Side.SELL:
             return False, "strategy_lab_short_only"
         if not opening_range_ready:
@@ -946,8 +993,6 @@ def evaluate_strategy_overlay(
         return True, None
 
     if overlay_mode == "session_twap_reclaim_long":
-        session_twap_gap_bps = _coerce_float(indicator_state.get("session_twap_gap_bps"))
-        atr14_bps = _coerce_float(indicator_state.get("atr14_bps"))
         if signal_side is not Side.BUY:
             return False, "strategy_lab_long_only"
         if trend_label != "bullish":
@@ -963,8 +1008,6 @@ def evaluate_strategy_overlay(
         return True, None
 
     if overlay_mode == "session_twap_reject_short":
-        session_twap_gap_bps = _coerce_float(indicator_state.get("session_twap_gap_bps"))
-        atr14_bps = _coerce_float(indicator_state.get("atr14_bps"))
         if signal_side is not Side.SELL:
             return False, "strategy_lab_short_only"
         if trend_label != "bearish":

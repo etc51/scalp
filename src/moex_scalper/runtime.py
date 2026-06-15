@@ -293,6 +293,10 @@ class ScalperRuntime:
             metadata={
                 "mode": self.config.mode,
                 "entry_profile": signal.profile,
+                "entry_expected_edge_bps": str(signal.expected_edge_bps),
+                "entry_impulse_bps": str(metrics.get("impulse_bps", "")),
+                "entry_imbalance": str(snapshot.imbalance),
+                "entry_spread_bps": str(snapshot.spread_bps),
             },
         )
         self.state.positions[position.instrument.instrument_id] = position

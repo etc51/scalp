@@ -11,6 +11,7 @@ requires-python = ">=3.12"
 dependencies = [
   "t-tech-investments==1.49.1",
   "pandas>=2.2,<3",
+  "pandas-ta-classic>=0.6.20",
 ]
 
 [tool.setuptools]

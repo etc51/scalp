@@ -22,6 +22,11 @@ ADAPTIVE_LATE_SESSION_MIN_EXPECTED_EDGE_BPS = Decimal("8")
 ADAPTIVE_COST_HEADROOM_FLOOR_BPS = Decimal("4")
 ADAPTIVE_EDGE_MULTIPLIER = Decimal("2.5")
 ADAPTIVE_LATE_SESSION_START_HOUR = 16
+ADAPTIVE_SCRATCH_MIN_SECONDS = 4.0
+ADAPTIVE_SCRATCH_MAX_SECONDS = 8.0
+ADAPTIVE_SCRATCH_MIN_ADVERSE_BPS = Decimal("2")
+ADAPTIVE_SCRATCH_LONG_OPPOSING_IMBALANCE = Decimal("0.46")
+ADAPTIVE_SCRATCH_SHORT_OPPOSING_IMBALANCE = Decimal("0.54")
 
 
 @dataclass(slots=True)
@@ -249,6 +254,7 @@ class ModerateScalpingStrategy:
         overlay_allowed, overlay_reason, overlay_metrics = self._check_strategy_overlay(
             state,
             signal_side=signal_side,
+            entry_profile=entry_profile,
         )
         metrics.update(overlay_metrics)
         if not overlay_allowed:
@@ -301,6 +307,14 @@ class ModerateScalpingStrategy:
             if current_price >= stop_price:
                 return ExitDecision(reason="stop_loss")
         elapsed_seconds = (snapshot.at - position.opened_at).total_seconds()
+        scratch_exit = self._maybe_adaptive_scratch(
+            position,
+            snapshot=snapshot,
+            current_price=current_price,
+            elapsed_seconds=elapsed_seconds,
+        )
+        if scratch_exit is not None:
+            return scratch_exit
         if elapsed_seconds < position.time_stop_seconds:
             return None
 
@@ -315,6 +329,40 @@ class ModerateScalpingStrategy:
             return ExitDecision(reason="time_stop")
         if elapsed_seconds >= (position.time_stop_seconds * 2):
             return ExitDecision(reason="time_stop")
+        return None
+
+    def _maybe_adaptive_scratch(
+        self,
+        position: Position,
+        *,
+        snapshot: MarketSnapshot,
+        current_price: Decimal,
+        elapsed_seconds: float,
+    ) -> ExitDecision | None:
+        if position.metadata.get("entry_profile") != "adaptive":
+            return None
+
+        scratch_delay_seconds = min(
+            ADAPTIVE_SCRATCH_MAX_SECONDS,
+            max(ADAPTIVE_SCRATCH_MIN_SECONDS, position.time_stop_seconds * 0.30),
+        )
+        if elapsed_seconds < scratch_delay_seconds:
+            return None
+
+        directional_move_bps = ((current_price / position.entry_price) - Decimal("1")) * Decimal("10000")
+        opposing_imbalance = snapshot.imbalance <= ADAPTIVE_SCRATCH_LONG_OPPOSING_IMBALANCE
+        if position.side is Side.SELL:
+            directional_move_bps = ((position.entry_price / current_price) - Decimal("1")) * Decimal("10000")
+            opposing_imbalance = snapshot.imbalance >= ADAPTIVE_SCRATCH_SHORT_OPPOSING_IMBALANCE
+
+        adverse_move_floor_bps = max(
+            ADAPTIVE_SCRATCH_MIN_ADVERSE_BPS,
+            position.stop_loss_bps * Decimal("0.45"),
+        )
+        if opposing_imbalance and directional_move_bps <= Decimal("0"):
+            return ExitDecision(reason="adaptive_scratch")
+        if directional_move_bps <= -adverse_move_floor_bps:
+            return ExitDecision(reason="adaptive_scratch")
         return None
 
     def _estimate_gross_pnl_rub(self, position: Position, *, current_price: Decimal) -> Decimal:
@@ -438,13 +486,18 @@ class ModerateScalpingStrategy:
         state: InstrumentMomentumState,
         *,
         signal_side: Side,
+        entry_profile: str,
     ) -> tuple[bool, str, dict[str, Decimal | str]]:
         mode = self._config.strategy_overlay_mode
         metrics: dict[str, Decimal | str] = {
             "strategy_overlay_mode": mode,
             "strategy_overlay_signal_side": signal_side.value,
+            "strategy_overlay_entry_profile": entry_profile,
         }
         if mode == "off":
+            return True, "ok", metrics
+        if mode == "adaptive_twap_trend" and entry_profile != "adaptive":
+            metrics["strategy_overlay_profile_policy"] = "strict_bypass"
             return True, "ok", metrics
 
         if not state.completed_minute_bars:

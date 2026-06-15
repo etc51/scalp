@@ -19,6 +19,7 @@ OPENING_RANGE_MINUTES = 5
 ALLOWED_STRATEGY_OVERLAY_MODES = frozenset(
     {
         "off",
+        "adaptive_twap_trend",
         "trend_pullback_long",
         "trend_pullback_short",
         "stoch_trend_long",
@@ -168,6 +169,37 @@ def evaluate_strategy_overlay(
             return False, "strategy_overlay_rsi_not_short_pullback_band", metrics
         if not _between(bb_pos, Decimal("0.35"), Decimal("0.90")):
             return False, "strategy_overlay_bb_not_short_pullback_band", metrics
+        return True, "ok", metrics
+
+    if overlay_mode == "adaptive_twap_trend":
+        if atr14_bps is None or atr14_bps < Decimal("4"):
+            return False, "strategy_overlay_atr_too_low", metrics
+        if signal_side is Side.BUY:
+            if trend_label != "bullish":
+                return False, "strategy_overlay_trend_not_bullish", metrics
+            if ema_gap_bps is None or ema_gap_bps <= ZERO:
+                return False, "strategy_overlay_ema_gap_not_positive", metrics
+            if macd_hist is None or macd_hist <= ZERO:
+                return False, "strategy_overlay_macd_not_positive", metrics
+            if not _between(rsi14, Decimal("48"), Decimal("72")):
+                return False, "strategy_overlay_rsi_not_adaptive_long_band", metrics
+            if not _between(session_twap_gap_bps, Decimal("0.25"), Decimal("10")):
+                return False, "strategy_overlay_twap_gap_not_adaptive_long_band", metrics
+            if not _between(bb_pos, Decimal("0.20"), Decimal("0.90")):
+                return False, "strategy_overlay_bb_not_adaptive_long_band", metrics
+            return True, "ok", metrics
+        if trend_label != "bearish":
+            return False, "strategy_overlay_trend_not_bearish", metrics
+        if ema_gap_bps is None or ema_gap_bps >= ZERO:
+            return False, "strategy_overlay_ema_gap_not_negative", metrics
+        if macd_hist is None or macd_hist >= ZERO:
+            return False, "strategy_overlay_macd_not_negative", metrics
+        if not _between(rsi14, Decimal("28"), Decimal("55")):
+            return False, "strategy_overlay_rsi_not_adaptive_short_band", metrics
+        if not _between(session_twap_gap_bps, Decimal("-10"), Decimal("-0.25")):
+            return False, "strategy_overlay_twap_gap_not_adaptive_short_band", metrics
+        if not _between(bb_pos, Decimal("0.10"), Decimal("0.80")):
+            return False, "strategy_overlay_bb_not_adaptive_short_band", metrics
         return True, "ok", metrics
 
     if overlay_mode == "stoch_trend_long":

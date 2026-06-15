@@ -3,6 +3,19 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Sequence
 
+try:
+    import pandas as _pd  # type: ignore
+except ImportError:
+    _pd = None
+
+try:
+    import pandas_ta as _pandas_ta  # type: ignore
+except ImportError:
+    try:
+        import pandas_ta_classic as _pandas_ta  # type: ignore
+    except ImportError:
+        _pandas_ta = None
+
 
 ZERO = Decimal("0")
 ONE = Decimal("1")
@@ -42,17 +55,27 @@ def compute_indicator_state(closes: Sequence[Decimal]) -> dict[str, Decimal | st
             "trend_label": None,
         }
 
-    ema9 = _ema(series, period=9)
-    ema21 = _ema(series, period=21)
-    ema_gap_bps = None
-    if ema9 is not None and ema21 not in {None, ZERO}:
-        ema_gap_bps = ((ema9 / ema21) - ONE) * TEN_THOUSAND
+    pandas_ta_state = _compute_indicator_state_with_pandas_ta(series)
+    if pandas_ta_state is not None:
+        ema9 = pandas_ta_state["ema9"]
+        ema21 = pandas_ta_state["ema21"]
+        ema_gap_bps = pandas_ta_state["ema_gap_bps"]
+        macd = pandas_ta_state["macd"]
+        macd_signal = pandas_ta_state["macd_signal"]
+        macd_hist = pandas_ta_state["macd_hist"]
+        rsi14 = pandas_ta_state["rsi14"]
+    else:
+        ema9 = _ema(series, period=9)
+        ema21 = _ema(series, period=21)
+        ema_gap_bps = None
+        if ema9 is not None and ema21 not in {None, ZERO}:
+            ema_gap_bps = ((ema9 / ema21) - ONE) * TEN_THOUSAND
 
-    macd_series = _macd_series(series)
-    macd = macd_series[-1] if macd_series else None
-    macd_signal = _ema(macd_series, period=9) if macd_series else None
-    macd_hist = (macd - macd_signal) if macd is not None and macd_signal is not None else None
-    rsi14 = _rsi(series, period=14)
+        macd_series = _macd_series(series)
+        macd = macd_series[-1] if macd_series else None
+        macd_signal = _ema(macd_series, period=9) if macd_series else None
+        macd_hist = (macd - macd_signal) if macd is not None and macd_signal is not None else None
+        rsi14 = _rsi(series, period=14)
     trend_label = classify_trend(
         rsi14=rsi14,
         ema_gap_bps=ema_gap_bps,
@@ -67,6 +90,47 @@ def compute_indicator_state(closes: Sequence[Decimal]) -> dict[str, Decimal | st
         "macd_signal": macd_signal,
         "macd_hist": macd_hist,
         "trend_label": trend_label,
+    }
+
+
+def _compute_indicator_state_with_pandas_ta(
+    values: Sequence[Decimal],
+) -> dict[str, Decimal | None] | None:
+    if _pd is None or _pandas_ta is None:
+        return None
+    close = _pd.Series([float(item) for item in values], dtype="float64")
+    ema9_series = _pandas_ta.ema(close, length=9)
+    ema21_series = _pandas_ta.ema(close, length=21)
+    rsi_series = _pandas_ta.rsi(close, length=14)
+    macd_frame = _pandas_ta.macd(close, fast=12, slow=26, signal=9)
+    if ema9_series is None or ema21_series is None or rsi_series is None:
+        return None
+
+    ema9 = _to_decimal(ema9_series.iloc[-1])
+    ema21 = _to_decimal(ema21_series.iloc[-1])
+    rsi14 = _to_decimal(rsi_series.iloc[-1])
+    if ema9 is None or ema21 is None or rsi14 is None:
+        return None
+
+    macd = None
+    macd_signal = None
+    macd_hist = None
+    if macd_frame is not None and not macd_frame.empty:
+        macd = _to_decimal(macd_frame.iloc[-1, 0])
+        macd_signal = _to_decimal(macd_frame.iloc[-1, 1])
+        macd_hist = _to_decimal(macd_frame.iloc[-1, 2])
+
+    ema_gap_bps = None
+    if ema21 != ZERO:
+        ema_gap_bps = ((ema9 / ema21) - ONE) * TEN_THOUSAND
+    return {
+        "rsi14": rsi14,
+        "ema9": ema9,
+        "ema21": ema21,
+        "ema_gap_bps": ema_gap_bps,
+        "macd": macd,
+        "macd_signal": macd_signal,
+        "macd_hist": macd_hist,
     }
 
 
@@ -111,3 +175,15 @@ def _rsi(values: Sequence[Decimal], *, period: int) -> Decimal | None:
         return HUNDRED
     rs = avg_gain / avg_loss
     return HUNDRED - (HUNDRED / (ONE + rs))
+
+
+def _to_decimal(value: object) -> Decimal | None:
+    try:
+        if value is None:
+            return None
+        decimal_value = Decimal(str(value))
+    except Exception:  # noqa: BLE001
+        return None
+    if decimal_value.is_nan():
+        return None
+    return decimal_value

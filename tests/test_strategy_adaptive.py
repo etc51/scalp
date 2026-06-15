@@ -305,6 +305,34 @@ class AdaptiveStrategyTests(unittest.TestCase):
         self.assertEqual(metrics["late_session"], "true")
         self.assertEqual(metrics["adaptive_long_impulse_pass"], "false")
 
+    def test_adaptive_twap_overlay_bypasses_strict_profile(self) -> None:
+        config = replace(build_config(mode="paper"), strategy_overlay_mode="adaptive_twap_trend")
+        strategy = ModerateScalpingStrategy(config)
+        state = strategy._state_for("instrument-sber")
+        start = datetime(2026, 6, 15, 10, 0, tzinfo=timezone.utc)
+        for index in range(25):
+            open_price = Decimal("100") + (Decimal(index) * Decimal("0.2"))
+            close_price = open_price + Decimal("0.2")
+            state.completed_minute_bars.append(
+                MinuteBar(
+                    at=start + timedelta(minutes=index),
+                    open=open_price,
+                    high=close_price + Decimal("0.1"),
+                    low=open_price - Decimal("0.1"),
+                    close=close_price,
+                )
+            )
+
+        allowed, reason, metrics = strategy._check_strategy_overlay(
+            state,
+            signal_side=Side.BUY,
+            entry_profile="strict",
+        )
+
+        self.assertTrue(allowed)
+        self.assertEqual(reason, "ok")
+        self.assertEqual(metrics["strategy_overlay_profile_policy"], "strict_bypass")
+
     def test_time_stop_waits_for_fee_break_even_before_forcing_exit(self) -> None:
         strategy = ModerateScalpingStrategy(build_config(mode="paper"))
         instrument = build_instrument()
@@ -340,6 +368,66 @@ class AdaptiveStrategyTests(unittest.TestCase):
         hard_exit = strategy.evaluate_exit(position, hard_timeout_snapshot)
         assert hard_exit is not None
         self.assertEqual(hard_exit.reason, "time_stop")
+
+    def test_adaptive_exit_scratches_when_flow_flips_against_position(self) -> None:
+        strategy = ModerateScalpingStrategy(build_config(mode="paper"))
+        instrument = build_instrument()
+        opened_at = datetime(2026, 6, 15, 10, 15, tzinfo=timezone.utc)
+        position = Position(
+            instrument=instrument,
+            side=Side.BUY,
+            quantity_lots=1,
+            entry_price=Decimal("100"),
+            opened_at=opened_at,
+            take_profit_bps=Decimal("50"),
+            stop_loss_bps=Decimal("10"),
+            time_stop_seconds=8.0,
+            entry_fee_rub=Decimal("0.4"),
+            reason="profile=adaptive",
+            metadata={"entry_profile": "adaptive"},
+        )
+
+        snapshot = build_snapshot(
+            instrument,
+            opened_at + timedelta(seconds=4),
+            bid_price="99.98",
+            ask_price="99.99",
+            bid_quantity=80,
+            ask_quantity=200,
+        )
+
+        exit_decision = strategy.evaluate_exit(position, snapshot)
+        assert exit_decision is not None
+        self.assertEqual(exit_decision.reason, "adaptive_scratch")
+
+    def test_strict_exit_does_not_scratch_before_time_stop(self) -> None:
+        strategy = ModerateScalpingStrategy(build_config(mode="paper"))
+        instrument = build_instrument()
+        opened_at = datetime(2026, 6, 15, 10, 15, tzinfo=timezone.utc)
+        position = Position(
+            instrument=instrument,
+            side=Side.BUY,
+            quantity_lots=1,
+            entry_price=Decimal("100"),
+            opened_at=opened_at,
+            take_profit_bps=Decimal("50"),
+            stop_loss_bps=Decimal("10"),
+            time_stop_seconds=8.0,
+            entry_fee_rub=Decimal("0.4"),
+            reason="profile=strict",
+            metadata={"entry_profile": "strict"},
+        )
+
+        snapshot = build_snapshot(
+            instrument,
+            opened_at + timedelta(seconds=4),
+            bid_price="99.98",
+            ask_price="99.99",
+            bid_quantity=80,
+            ask_quantity=200,
+        )
+
+        self.assertIsNone(strategy.evaluate_exit(position, snapshot))
 
     def test_time_stop_exits_at_soft_timeout_when_trade_is_fee_positive(self) -> None:
         strategy = ModerateScalpingStrategy(build_config(mode="paper"))
