@@ -11,6 +11,36 @@ def get_roundtrip_commission_bps(config: ScalperConfig) -> Decimal:
     return CommissionModel(config.premium_share_commission_bps).roundtrip_bps
 
 
+def build_paper_risk_profile(config: ScalperConfig) -> dict[str, str]:
+    leverage = config.paper_max_gross_leverage
+    if leverage <= Decimal("1.2"):
+        return {
+            "stage": "Conservative validation",
+            "max_gross_leverage": str(leverage),
+            "margin_policy": "Margin enabled, but capped",
+            "decision": "Hold at 1.2x until expectancy is proven",
+            "promotion_rule": "Move to 1.5x only after 100+ closed paper trades, profit factor >= 1.15, positive expectancy, and no repeated daily loss-limit breaches",
+            "rollback_rule": "Drop back to 1.0x if the recent sample turns negative or daily loss-limit triggers start repeating",
+        }
+    if leverage <= Decimal("1.5"):
+        return {
+            "stage": "Moderate scale-up",
+            "max_gross_leverage": str(leverage),
+            "margin_policy": "Measured margin use",
+            "decision": "Use 1.5x only after a positive sample is confirmed",
+            "promotion_rule": "Hold here only while profit factor and expectancy stay positive through new samples",
+            "rollback_rule": "Drop back to 1.2x if drawdown or daily loss-limit pressure increases",
+        }
+    return {
+        "stage": "Aggressive for paper scalping",
+        "max_gross_leverage": str(leverage),
+        "margin_policy": "High margin usage",
+        "decision": "Not recommended for the current validation phase",
+        "promotion_rule": "Do not raise leverage further without a clear statistical edge",
+        "rollback_rule": "Reduce leverage if stability is not already proven",
+    }
+
+
 def get_configured_net_take_profit_bps(config: ScalperConfig) -> Decimal:
     return config.take_profit_bps - get_roundtrip_commission_bps(config)
 
@@ -40,6 +70,7 @@ def build_strategy_diagnostics(config: ScalperConfig) -> dict[str, Any]:
     net_take_profit_buffer_bps = net_take_profit_bps - config.min_net_take_profit_bps
     target_net_take_profit_buffer_bps = config.target_net_take_profit_buffer_bps
     recommended_take_profit_bps = get_recommended_take_profit_bps(config)
+    paper_risk_profile = build_paper_risk_profile(config)
     expected_edge_ceiling_bps = config.take_profit_bps
     expected_edge_constraint_met = config.min_expected_edge_bps <= expected_edge_ceiling_bps
     viable_for_entry = (
@@ -69,6 +100,7 @@ def build_strategy_diagnostics(config: ScalperConfig) -> dict[str, Any]:
         "expected_edge_constraint_met": expected_edge_constraint_met,
         "min_expected_edge_bps": str(config.min_expected_edge_bps),
         "min_net_take_profit_bps": str(config.min_net_take_profit_bps),
+        "paper_risk_profile": paper_risk_profile,
         "net_take_profit_buffer_bps": str(net_take_profit_buffer_bps),
         "target_net_take_profit_buffer_bps": str(target_net_take_profit_buffer_bps),
         "recommended_take_profit_bps": str(recommended_take_profit_bps),

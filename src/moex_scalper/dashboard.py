@@ -492,9 +492,16 @@ HTML = """<!doctype html>
 
     const renderStrategy = (parameters, diagnostics) => {
       if (!parameters) return '<div class="empty">Нет strategy-params</div>';
+      const risk = diagnostics?.paper_risk_profile || null;
       return renderTable(
         ["Param", "Value"],
         [
+          ["Risk Stage", risk?.stage ?? "—"],
+          ["Max Gross Leverage", risk?.max_gross_leverage ? `${risk.max_gross_leverage}x` : "—"],
+          ["Margin Policy", risk?.margin_policy ?? "—"],
+          ["Leverage Decision", risk?.decision ?? "—"],
+          ["Promotion Rule", risk?.promotion_rule ?? "—"],
+          ["Rollback Rule", risk?.rollback_rule ?? "—"],
           ["Max Spread", parameters.max_spread_bps ?? "—"],
           ["Min Imbalance", parameters.min_imbalance ?? "—"],
           ["Min Impulse", parameters.min_impulse_bps ?? "—"],
