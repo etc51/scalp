@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .config import ScalperConfig
+from .optimizer import snapshot_in_entry_window
 
 
 def _decimal(value: str | int | float | Decimal | None, default: str = "0") -> Decimal:
@@ -95,19 +96,47 @@ def analyze_trades(
         maybe_write_report(config.runtime_dir, payload, report_key=report_key, enabled=write_report)
         return payload
 
-    included_dates = sorted(
+    selected_dates = sorted(
         {
             record.closed_at.astimezone(config.timezone).date().isoformat()
             for record in selected
         }
     )
-    summary = summarize_records(selected)
-    ticker_stats = build_breakdown(selected, key_fn=lambda item: item.ticker)
+    filtered, entry_window_summary = filter_trade_records_for_entry_window(config, selected)
+    if not filtered:
+        payload = {
+            "status": "no_entry_window_data",
+            "generated_at": datetime.utcnow().isoformat() + "Z",
+            "trade_file": str(trades_path),
+            "raw_trade_count": len(selected),
+            "trade_count": 0,
+            "window": {
+                "start_date": start_date.isoformat(),
+                "end_date": resolved_end_date.isoformat(),
+                "days_requested": rolling_days,
+                "days_with_trades": len(selected_dates),
+                "included_dates": selected_dates,
+                "timezone": config.timezone_name,
+            },
+            "entry_window_summary": entry_window_summary,
+            "message": "Recorded trades exist in the rolling window, but none were opened inside the configured entry window.",
+        }
+        maybe_write_report(config.runtime_dir, payload, report_key=report_key, enabled=write_report)
+        return payload
+
+    included_dates = sorted(
+        {
+            record.closed_at.astimezone(config.timezone).date().isoformat()
+            for record in filtered
+        }
+    )
+    summary = summarize_records(filtered)
+    ticker_stats = build_breakdown(filtered, key_fn=lambda item: item.ticker)
     hour_stats = build_breakdown(
-        selected,
+        filtered,
         key_fn=lambda item: item.closed_at.astimezone(config.timezone).strftime("%H:00"),
     )
-    exit_reason_stats = build_breakdown(selected, key_fn=lambda item: item.exit_reason)
+    exit_reason_stats = build_breakdown(filtered, key_fn=lambda item: item.exit_reason)
     focus = build_focus(
         summary,
         ticker_stats=ticker_stats,
@@ -119,6 +148,8 @@ def analyze_trades(
         "status": "ok",
         "generated_at": datetime.utcnow().isoformat() + "Z",
         "trade_file": str(trades_path),
+        "raw_trade_count": len(selected),
+        "trade_count": len(filtered),
         "window": {
             "start_date": start_date.isoformat(),
             "end_date": resolved_end_date.isoformat(),
@@ -127,6 +158,7 @@ def analyze_trades(
             "included_dates": included_dates,
             "timezone": config.timezone_name,
         },
+        "entry_window_summary": entry_window_summary,
         "summary": summary,
         "assessment": classify_assessment(summary),
         "focus": focus,
@@ -135,11 +167,11 @@ def analyze_trades(
         "by_exit_reason": build_ranked_section(exit_reason_stats, top_n=top_n),
         "largest_losses": [
             serialize_trade_record(record)
-            for record in sorted(selected, key=lambda item: item.net_pnl_rub)[:top_n]
+            for record in sorted(filtered, key=lambda item: item.net_pnl_rub)[:top_n]
         ],
         "largest_wins": [
             serialize_trade_record(record)
-            for record in sorted(selected, key=lambda item: item.net_pnl_rub, reverse=True)[:top_n]
+            for record in sorted(filtered, key=lambda item: item.net_pnl_rub, reverse=True)[:top_n]
         ],
     }
     maybe_write_report(config.runtime_dir, payload, report_key=report_key, enabled=write_report)
@@ -197,6 +229,41 @@ def load_trade_records(path: Path) -> list[TradeRecord]:
                 )
             )
     return records
+
+
+def filter_trade_records_for_entry_window(
+    config: ScalperConfig,
+    records: list[TradeRecord],
+) -> tuple[list[TradeRecord], dict[str, Any]]:
+    included: list[TradeRecord] = []
+    excluded_reasons: Counter[str] = Counter()
+    included_dates: set[str] = set()
+    excluded_dates: set[str] = set()
+
+    for record in records:
+        allowed, reason = snapshot_in_entry_window(config, record.opened_at)
+        local_date = record.opened_at.astimezone(config.timezone).date().isoformat()
+        if allowed:
+            included.append(record)
+            included_dates.add(local_date)
+        else:
+            excluded_reasons[reason] += 1
+            excluded_dates.add(local_date)
+
+    summary = {
+        "timezone": config.timezone_name,
+        "weekdays": list(config.entry_weekdays),
+        "start": config.entry_start_time.isoformat(timespec="minutes"),
+        "end": config.entry_end_time.isoformat(timespec="minutes"),
+        "filter_basis": "opened_at",
+        "raw_trade_count": len(records),
+        "included_trade_count": len(included),
+        "excluded_trade_count": len(records) - len(included),
+        "included_dates": sorted(included_dates),
+        "excluded_dates": sorted(excluded_dates),
+        "excluded_reasons": dict(excluded_reasons),
+    }
+    return included, summary
 
 
 def summarize_records(records: list[TradeRecord]) -> dict[str, Any]:

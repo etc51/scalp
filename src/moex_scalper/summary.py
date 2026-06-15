@@ -53,8 +53,8 @@ def build_daily_summary(
         "analysis": {
             "status": (analysis or {}).get("status"),
             "assessment": (analysis or {}).get("assessment"),
-            "trade_count": (((analysis or {}).get("summary") or {}).get("trade_count")),
-            "net_pnl_rub": (((analysis or {}).get("summary") or {}).get("net_pnl_rub")),
+            "trade_count": (((analysis or {}).get("summary") or {}).get("trade_count", (analysis or {}).get("trade_count"))),
+            "net_pnl_rub": (((analysis or {}).get("summary") or {}).get("net_pnl_rub", (analysis or {}).get("net_pnl_rub"))),
             "focus": list((analysis or {}).get("focus") or []),
         },
         "optimizer": {
