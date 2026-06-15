@@ -39,6 +39,7 @@ def build_daily_summary(
         "updated_at": (state or {}).get("updated_at"),
         "watchlist": list((state or {}).get("watchlist") or []),
         "strategy_diagnostics": (state or {}).get("strategy_diagnostics"),
+        "risk_controls": (state or {}).get("risk_controls"),
         "today": {
             "trade_count": int(today_stats.get("trade_count", 0) or 0),
             "net_pnl_rub": today_stats.get("net_pnl_rub"),
@@ -138,6 +139,8 @@ def build_focus(payload: dict[str, Any]) -> list[str]:
     active_experiment = governance.get("active_experiment") or {}
     watchdog = payload.get("watchdog") or {}
     strategy_diagnostics = payload.get("strategy_diagnostics") or {}
+    risk_controls = payload.get("risk_controls") or {}
+    active_guards = list(risk_controls.get("active_ticker_guards") or [])
 
     if watchdog.get("status") not in {None, "healthy"}:
         focus.append(f"Watchdog status: {watchdog.get('status')}.")
@@ -184,6 +187,12 @@ def build_focus(payload: dict[str, Any]) -> list[str]:
             )
     if int(today.get("trade_count", 0) or 0) <= 0:
         focus.append("Сегодня нет закрытых paper-сделок.")
+    if active_guards:
+        guard_summary = ", ".join(
+            f"{item.get('ticker')}({','.join(str(reason_name) for reason_name in list(item.get('reasons') or []))})"
+            for item in active_guards[:3]
+        )
+        focus.append(f"Intraday ticker-guard сейчас удерживает новые входы: {guard_summary}.")
     if analysis.get("assessment") == "insufficient_sample":
         focus.append("Trade sample пока недостаточен для устойчивых выводов.")
 
@@ -220,6 +229,8 @@ def build_headline(payload: dict[str, Any]) -> str:
     active_experiment = governance.get("active_experiment") or {}
     watchdog = payload.get("watchdog") or {}
     strategy_diagnostics = payload.get("strategy_diagnostics") or {}
+    risk_controls = payload.get("risk_controls") or {}
+    active_guards = list(risk_controls.get("active_ticker_guards") or [])
 
     if watchdog.get("status") not in {None, "healthy"}:
         return f"Watchdog status {watchdog.get('status')}: контур требует внимания."
@@ -247,6 +258,11 @@ def build_headline(payload: dict[str, Any]) -> str:
         return "В market-history пока нет валидного in-window sample для optimizer/research."
     if int(today.get("trade_count", 0) or 0) <= 0:
         return "Сегодня закрытых paper-сделок нет; продолжаем сбор сигнала и market-data."
+    if active_guards:
+        return (
+            "Intraday ticker-guard уже сработал по части тикеров; "
+            "остальные инструменты продолжают paper-торговлю."
+        )
     return (
         f"Сегодня {today.get('trade_count', 0)} сделок, net PnL {today.get('net_pnl_rub', '0')} RUB, "
         f"analysis={analysis.get('assessment', 'n/a')}."

@@ -104,6 +104,11 @@ class ScalperRuntime:
             ",".join(self.active_restrictions.disabled_tickers) or "none",
             ",".join(str(hour) for hour in self.active_restrictions.blocked_entry_hours) or "none",
         )
+        LOGGER.info(
+            "Intraday ticker guard loss_limit=%s consecutive_losses=%s",
+            self.config.intraday_ticker_loss_limit_rub,
+            self.config.intraday_ticker_max_consecutive_losses,
+        )
 
         self.started_at = datetime.now(timezone.utc)
         async with open_client(self.config) as services:
@@ -304,6 +309,10 @@ class ScalperRuntime:
         )
         self.state.positions.pop(snapshot.instrument.instrument_id, None)
         self.state.trades_today.append(trade)
+        prior_guarded_tickers = {
+            str(item.get("ticker"))
+            for item in self.risk.active_ticker_guards()
+        }
         self.risk.note_closed_trade(trade)
         if isinstance(executor, PaperExecutor):
             self._record_paper_trade(trade)
@@ -317,6 +326,17 @@ class ScalperRuntime:
             trade.net_pnl_rub,
             self.risk.realized_pnl_rub,
         )
+        for item in self.risk.active_ticker_guards():
+            ticker = str(item.get("ticker"))
+            if ticker in prior_guarded_tickers:
+                continue
+            LOGGER.warning(
+                "INTRADAY_GUARD ticker=%s reasons=%s realized=%s consecutive_losses=%s",
+                ticker,
+                ",".join(str(reason_name) for reason_name in list(item.get("reasons") or [])),
+                item.get("realized_pnl_rub"),
+                item.get("consecutive_losses"),
+            )
 
     def _maybe_log_heartbeat(self, now: datetime) -> None:
         if self._last_heartbeat_at is not None and (now - self._last_heartbeat_at).total_seconds() < 15:
@@ -451,6 +471,18 @@ class ScalperRuntime:
             "position_sizing_mode": self.config.position_sizing_mode,
             "strategy_parameters": current_strategy_parameters(self.config),
             "strategy_diagnostics": build_strategy_diagnostics(self.config),
+            "risk_controls": {
+                "current_day": self.risk.current_day,
+                "daily_loss_limit_rub": str(self.config.daily_loss_limit_rub),
+                "intraday_ticker_loss_limit_rub": str(
+                    self.config.intraday_ticker_loss_limit_rub
+                ),
+                "intraday_ticker_max_consecutive_losses": (
+                    self.config.intraday_ticker_max_consecutive_losses
+                ),
+                "cooldown_seconds": self.config.cooldown_seconds,
+                "active_ticker_guards": self.risk.active_ticker_guards(),
+            },
             "active_restrictions": serialize_restrictions(self.active_restrictions),
             "entry_schedule": {
                 "timezone": self.config.timezone_name,
@@ -560,22 +592,25 @@ class ScalperRuntime:
             instruments=instruments,
             timezone_info=self.config.timezone,
         )
+        now = datetime.now(timezone.utc)
+        current_day = now.astimezone(self.config.timezone).date().isoformat()
         executor.restore_cash(restored["cash_rub"])
         self.state.positions = {
             position.instrument.instrument_id: position
             for position in restored["positions"]
         }
+        self.state.trades_today = [
+            trade
+            for trade in restored["trades_today"]
+            if trade.closed_at.astimezone(self.config.timezone).date().isoformat() == current_day
+        ]
         self.risk.restore_state(
             realized_pnl_rub=restored["risk_realized_pnl_rub"],
             current_day=restored["risk_current_day"],
             cooldown_until=restored["cooldown_until"],
-            now=datetime.now(timezone.utc),
+            trades_today=self.state.trades_today,
+            now=now,
         )
-        self.state.trades_today = [
-            trade
-            for trade in restored["trades_today"]
-            if trade.closed_at.astimezone(self.config.timezone).date().isoformat() == self.risk.current_day
-        ]
         if self.paper_store.seed_history_if_empty(self.state.trades_today):
             LOGGER.info("Seeded paper trade history from restored session trades=%s", len(self.state.trades_today))
         self.state.blocked_reasons = restored["blocked_reasons"]
@@ -588,11 +623,15 @@ class ScalperRuntime:
         self.state.last_recorded_market_snapshot_at = restored["last_recorded_market_snapshot_at"]
         self._roll_market_history_day(datetime.now(timezone.utc))
         LOGGER.info(
-            "Restored paper session cash=%s positions=%s trades_today=%s realized_today=%s",
+            "Restored paper session cash=%s positions=%s trades_today=%s realized_today=%s guarded_tickers=%s",
             executor.cash_rub,
             len(self.state.positions),
             len(self.state.trades_today),
             self.risk.realized_pnl_rub,
+            ",".join(
+                str(item.get("ticker"))
+                for item in self.risk.active_ticker_guards()
+            ) or "none",
         )
 
     def _save_paper_session(self, executor: PaperExecutor) -> None:

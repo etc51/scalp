@@ -490,9 +490,10 @@ HTML = """<!doctype html>
       );
     };
 
-    const renderStrategy = (parameters, diagnostics) => {
+    const renderStrategy = (parameters, diagnostics, riskControls) => {
       if (!parameters) return '<div class="empty">Нет strategy-params</div>';
       const risk = diagnostics?.paper_risk_profile || null;
+      const activeGuards = riskControls?.active_ticker_guards || [];
       return renderTable(
         ["Param", "Value"],
         [
@@ -519,6 +520,10 @@ HTML = """<!doctype html>
           ["Recommended TP", diagnostics?.recommended_take_profit_bps ?? "—"],
           ["Viable For Entry", diagnostics?.viable_for_entry === undefined ? "—" : String(diagnostics.viable_for_entry)],
           ["Warnings", (diagnostics?.warnings || []).join(", ") || "—"],
+          ["Daily Loss Limit", riskControls?.daily_loss_limit_rub ?? "—"],
+          ["Ticker Loss Limit", riskControls?.intraday_ticker_loss_limit_rub ?? "—"],
+          ["Ticker Loss Streak", riskControls?.intraday_ticker_max_consecutive_losses ?? "—"],
+          ["Active Ticker Guards", activeGuards.map((item) => `${item.ticker} [${(item.reasons || []).join(", ")}]`).join(" | ") || "—"],
           ["Cooldown", parameters.cooldown_seconds ?? "—"],
         ],
       );
@@ -681,6 +686,7 @@ HTML = """<!doctype html>
 
     const renderDailySummary = (summary) => {
       if (!summary) return '<div class="empty">Пока нет daily-summary</div>';
+      const activeGuards = summary.risk_controls?.active_ticker_guards || [];
       return renderTable(
         ["Metric", "Value"],
         [
@@ -695,6 +701,7 @@ HTML = """<!doctype html>
           ["Overall Trades", fmtNum(summary.overall?.trade_count || 0, 0)],
           ["Overall Net PnL", `<span class="${pnlClass(summary.overall?.net_pnl_rub)}">${fmtRub(summary.overall?.net_pnl_rub)}</span>`],
           ["Analysis", summary.analysis?.assessment || summary.analysis?.status || "—"],
+          ["Ticker Guards", activeGuards.map((item) => `${item.ticker} [${(item.reasons || []).join(", ")}]`).join(" | ") || "—"],
           ["Optimizer", summary.optimizer?.status || "—"],
           ["Research", summary.research?.status || "—"],
           ["Watchdog", summary.watchdog?.status || "—"],
@@ -889,6 +896,7 @@ HTML = """<!doctype html>
         document.getElementById("strategyWrap").innerHTML = renderStrategy(
           state.strategy_parameters || null,
           state.strategy_diagnostics || null,
+          state.risk_controls || null,
         );
         document.getElementById("restrictionsWrap").innerHTML = renderRestrictions(restrictions, activeRestrictions);
         document.getElementById("tuningWrap").innerHTML = renderTuning(tuning);
@@ -922,6 +930,14 @@ def _default_payload() -> dict[str, object]:
         "position_sizing_mode": None,
         "strategy_parameters": None,
         "strategy_diagnostics": None,
+        "risk_controls": {
+            "current_day": None,
+            "daily_loss_limit_rub": None,
+            "intraday_ticker_loss_limit_rub": None,
+            "intraday_ticker_max_consecutive_losses": None,
+            "cooldown_seconds": None,
+            "active_ticker_guards": [],
+        },
         "active_restrictions": {
             "disabled_tickers": [],
             "blocked_entry_hours": [],

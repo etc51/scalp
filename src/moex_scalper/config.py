@@ -157,6 +157,8 @@ class ScalperConfig:
     order_quantity_lots: int
     max_position_notional_rub: Decimal
     daily_loss_limit_rub: Decimal
+    intraday_ticker_loss_limit_rub: Decimal
+    intraday_ticker_max_consecutive_losses: int
     cooldown_seconds: float
     time_stop_seconds: float
     impulse_window_seconds: float
@@ -240,6 +242,13 @@ def load_config(args: argparse.Namespace, *, require_auth: bool = True) -> Scalp
         order_quantity_lots=max(1, int(os.getenv("SCALPER_ORDER_QUANTITY_LOTS", "1"))),
         max_position_notional_rub=Decimal(os.getenv("SCALPER_MAX_POSITION_NOTIONAL_RUB", "30000")),
         daily_loss_limit_rub=Decimal(os.getenv("SCALPER_DAILY_LOSS_LIMIT_RUB", "2500")),
+        intraday_ticker_loss_limit_rub=Decimal(
+            os.getenv("SCALPER_INTRADAY_TICKER_LOSS_LIMIT_RUB", "250")
+        ),
+        intraday_ticker_max_consecutive_losses=max(
+            0,
+            int(os.getenv("SCALPER_INTRADAY_TICKER_MAX_CONSECUTIVE_LOSSES", "4")),
+        ),
         cooldown_seconds=float(os.getenv("SCALPER_COOLDOWN_SECONDS", "12")),
         time_stop_seconds=float(os.getenv("SCALPER_TIME_STOP_SECONDS", "8")),
         impulse_window_seconds=float(os.getenv("SCALPER_IMPULSE_WINDOW_SECONDS", "2.5")),

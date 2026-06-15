@@ -212,6 +212,10 @@ python3 -m moex_scalper run --mode live
   - `trend_bullish` — входить только если предыдущая закрытая минута выглядит bullish по RSI/EMA/MACD regime
   - `macd_positive` — входить только если у предыдущей закрытой минуты `MACD histogram > 0`
   - `rsi_50_70` — входить только если у предыдущей закрытой минуты `RSI14` в диапазоне `50-70`
+- `SCALPER_INTRADAY_TICKER_LOSS_LIMIT_RUB` и `SCALPER_INTRADAY_TICKER_MAX_CONSECUTIVE_LOSSES` добавляют узкий intraday-guard по отдельному тикеру:
+  - guard влияет только на новые входы по конкретному тикеру
+  - уже открытая или восстановленная после рестарта позиция не закрывается этим guard автоматически
+  - остальные тикеры из watchlist продолжают работать
 - это рабочий paper-контур для накопления статистики и data-driven тюнинга
 
 ## GitHub Auto-Update On Server
