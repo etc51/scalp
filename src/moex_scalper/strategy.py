@@ -11,21 +11,7 @@ from .domain import EntrySignal, ExitDecision, MarketSnapshot, Position, Side
 from .indicators import compute_indicator_state
 from .strategy_overlay import MinuteBar, compute_overlay_indicator_state, evaluate_strategy_overlay
 
-ADAPTIVE_MAX_SPREAD_BPS = Decimal("2.5")
-ADAPTIVE_LATE_SESSION_MAX_SPREAD_BPS = Decimal("2.0")
-ADAPTIVE_MIN_IMBALANCE = Decimal("0.52")
-ADAPTIVE_LATE_SESSION_MIN_IMBALANCE = Decimal("0.55")
-ADAPTIVE_MIN_IMPULSE_BPS = Decimal("1.5")
-ADAPTIVE_LATE_SESSION_MIN_IMPULSE_BPS = Decimal("2.0")
-ADAPTIVE_MIN_EXPECTED_EDGE_BPS = Decimal("6")
-ADAPTIVE_LATE_SESSION_MIN_EXPECTED_EDGE_BPS = Decimal("8")
-ADAPTIVE_COST_HEADROOM_FLOOR_BPS = Decimal("4")
 ADAPTIVE_EDGE_MULTIPLIER = Decimal("2.5")
-ADAPTIVE_EXPECTED_EDGE_AFTER_COSTS_FLOOR_BPS = Decimal("2.0")
-ADAPTIVE_STRONG_EXPECTED_EDGE_AFTER_COSTS_BPS = Decimal("4.0")
-ADAPTIVE_IMPULSE_SPREAD_RATIO_FLOOR = Decimal("1.25")
-ADAPTIVE_STRONG_IMPULSE_SPREAD_RATIO = Decimal("2.0")
-ADAPTIVE_WORKABLE_TIME_STOP_SECONDS = 14.0
 ADAPTIVE_LATE_SESSION_START_HOUR = 16
 ADAPTIVE_SCRATCH_MIN_SECONDS = 4.0
 ADAPTIVE_SCRATCH_MAX_SECONDS = 8.0
@@ -111,33 +97,39 @@ class ModerateScalpingStrategy:
             # follow-through instead of fee-burning micro-noise.
             adaptive_spread_bps = min(
                 self._config.max_spread_bps + Decimal("0.50"),
-                ADAPTIVE_MAX_SPREAD_BPS,
+                self._config.adaptive_max_spread_bps,
             )
-            adaptive_min_imbalance = max(self._config.min_imbalance, ADAPTIVE_MIN_IMBALANCE)
-            adaptive_min_impulse_bps = max(self._config.min_impulse_bps, ADAPTIVE_MIN_IMPULSE_BPS)
+            adaptive_min_imbalance = max(
+                self._config.min_imbalance,
+                self._config.adaptive_min_imbalance,
+            )
+            adaptive_min_impulse_bps = max(
+                self._config.min_impulse_bps,
+                self._config.adaptive_min_impulse_bps,
+            )
             adaptive_take_profit_bps = self._config.take_profit_bps
             adaptive_stop_loss_bps = self._config.stop_loss_bps
             adaptive_min_expected_edge_bps = max(
                 self._config.min_expected_edge_bps,
-                ADAPTIVE_MIN_EXPECTED_EDGE_BPS,
+                self._config.adaptive_min_expected_edge_bps,
             )
             adaptive_edge_multiplier = ADAPTIVE_EDGE_MULTIPLIER
             if late_session:
                 adaptive_spread_bps = min(
                     adaptive_spread_bps,
-                    ADAPTIVE_LATE_SESSION_MAX_SPREAD_BPS,
+                    self._config.adaptive_late_session_max_spread_bps,
                 )
                 adaptive_min_imbalance = max(
                     adaptive_min_imbalance,
-                    ADAPTIVE_LATE_SESSION_MIN_IMBALANCE,
+                    self._config.adaptive_late_session_min_imbalance,
                 )
                 adaptive_min_impulse_bps = max(
                     adaptive_min_impulse_bps,
-                    ADAPTIVE_LATE_SESSION_MIN_IMPULSE_BPS,
+                    self._config.adaptive_late_session_min_impulse_bps,
                 )
                 adaptive_min_expected_edge_bps = max(
                     adaptive_min_expected_edge_bps,
-                    ADAPTIVE_LATE_SESSION_MIN_EXPECTED_EDGE_BPS,
+                    self._config.adaptive_late_session_min_expected_edge_bps,
                 )
         metrics: dict[str, Decimal | str] = {
             "local_hour": str(local_hour),
@@ -252,7 +244,7 @@ class ModerateScalpingStrategy:
         if entry_profile == "adaptive":
             net_take_profit_after_costs_bps = net_take_profit_bps - snapshot.spread_bps
             adaptive_cost_headroom_floor_bps = max(
-                ADAPTIVE_COST_HEADROOM_FLOOR_BPS,
+                self._config.adaptive_cost_headroom_floor_bps,
                 self._config.target_net_take_profit_buffer_bps,
             )
             metrics["net_take_profit_after_costs_bps"] = net_take_profit_after_costs_bps
@@ -263,7 +255,7 @@ class ModerateScalpingStrategy:
                 expected_edge_bps - self._commission_model.roundtrip_bps - snapshot.spread_bps
             )
             adaptive_expected_edge_after_costs_floor_bps = max(
-                ADAPTIVE_EXPECTED_EDGE_AFTER_COSTS_FLOOR_BPS,
+                self._config.adaptive_expected_edge_after_costs_floor_bps,
                 self._config.target_net_take_profit_buffer_bps,
             )
             adaptive_impulse_spread_ratio = (
@@ -276,20 +268,21 @@ class ModerateScalpingStrategy:
                 adaptive_expected_edge_after_costs_floor_bps
             )
             metrics["adaptive_impulse_spread_ratio"] = adaptive_impulse_spread_ratio
-            if adaptive_impulse_spread_ratio < ADAPTIVE_IMPULSE_SPREAD_RATIO_FLOOR:
+            if adaptive_impulse_spread_ratio < self._config.adaptive_impulse_spread_ratio_floor:
                 return None, "impulse_too_small", metrics
             if expected_edge_after_costs_bps < adaptive_expected_edge_after_costs_floor_bps:
                 return None, "expected_edge_too_low", metrics
             if (
-                adaptive_impulse_spread_ratio >= ADAPTIVE_STRONG_IMPULSE_SPREAD_RATIO
-                and expected_edge_after_costs_bps >= ADAPTIVE_STRONG_EXPECTED_EDGE_AFTER_COSTS_BPS
+                adaptive_impulse_spread_ratio >= self._config.adaptive_strong_impulse_spread_ratio
+                and expected_edge_after_costs_bps
+                >= self._config.adaptive_strong_expected_edge_after_costs_bps
             ):
                 entry_tier = "strong"
             else:
                 entry_tier = "workable"
                 effective_time_stop_seconds = min(
                     effective_time_stop_seconds,
-                    ADAPTIVE_WORKABLE_TIME_STOP_SECONDS,
+                    self._config.adaptive_workable_time_stop_seconds,
                 )
         metrics["entry_tier"] = entry_tier
         metrics["effective_time_stop_seconds"] = str(effective_time_stop_seconds)

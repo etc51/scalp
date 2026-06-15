@@ -20,6 +20,20 @@ PARAMETER_ENV_MAP: dict[str, str] = {
     "time_stop_seconds": "SCALPER_TIME_STOP_SECONDS",
     "min_expected_edge_bps": "SCALPER_MIN_EXPECTED_EDGE_BPS",
     "min_net_take_profit_bps": "SCALPER_MIN_NET_TAKE_PROFIT_BPS",
+    "adaptive_max_spread_bps": "SCALPER_ADAPTIVE_MAX_SPREAD_BPS",
+    "adaptive_late_session_max_spread_bps": "SCALPER_ADAPTIVE_LATE_SESSION_MAX_SPREAD_BPS",
+    "adaptive_min_imbalance": "SCALPER_ADAPTIVE_MIN_IMBALANCE",
+    "adaptive_late_session_min_imbalance": "SCALPER_ADAPTIVE_LATE_SESSION_MIN_IMBALANCE",
+    "adaptive_min_impulse_bps": "SCALPER_ADAPTIVE_MIN_IMPULSE_BPS",
+    "adaptive_late_session_min_impulse_bps": "SCALPER_ADAPTIVE_LATE_SESSION_MIN_IMPULSE_BPS",
+    "adaptive_min_expected_edge_bps": "SCALPER_ADAPTIVE_MIN_EXPECTED_EDGE_BPS",
+    "adaptive_late_session_min_expected_edge_bps": "SCALPER_ADAPTIVE_LATE_SESSION_MIN_EXPECTED_EDGE_BPS",
+    "adaptive_cost_headroom_floor_bps": "SCALPER_ADAPTIVE_COST_HEADROOM_FLOOR_BPS",
+    "adaptive_expected_edge_after_costs_floor_bps": "SCALPER_ADAPTIVE_EXPECTED_EDGE_AFTER_COSTS_FLOOR_BPS",
+    "adaptive_strong_expected_edge_after_costs_bps": "SCALPER_ADAPTIVE_STRONG_EXPECTED_EDGE_AFTER_COSTS_BPS",
+    "adaptive_impulse_spread_ratio_floor": "SCALPER_ADAPTIVE_IMPULSE_SPREAD_RATIO_FLOOR",
+    "adaptive_strong_impulse_spread_ratio": "SCALPER_ADAPTIVE_STRONG_IMPULSE_SPREAD_RATIO",
+    "adaptive_workable_time_stop_seconds": "SCALPER_ADAPTIVE_WORKABLE_TIME_STOP_SECONDS",
     "cooldown_seconds": "SCALPER_COOLDOWN_SECONDS",
     "paper_ticker_guard_cooldown_seconds": "SCALPER_PAPER_TICKER_GUARD_COOLDOWN_SECONDS",
 }
@@ -29,11 +43,21 @@ ALLOW_SHORT_ENV_KEY = "SCALPER_ALLOW_SHORT"
 EXPECTED_EDGE_STEPS = (Decimal("4"), Decimal("6"), Decimal("8"), Decimal("10"), Decimal("12"), Decimal("14"))
 IMPULSE_STEPS = (Decimal("1.0"), Decimal("1.5"), Decimal("2.5"), Decimal("4.0"))
 IMBALANCE_STEPS = (Decimal("0.45"), Decimal("0.50"), Decimal("0.55"), Decimal("0.60"), Decimal("0.66"))
+ADAPTIVE_EXPECTED_EDGE_AFTER_COSTS_FLOOR_STEPS = (
+    Decimal("2.0"),
+    Decimal("2.5"),
+    Decimal("3.0"),
+    Decimal("3.5"),
+    Decimal("4.0"),
+    Decimal("4.5"),
+    Decimal("5.0"),
+)
 DEFAULT_COVERAGE_ALLOWED_BLOCK_REASONS = (
     "expected_edge_too_low",
     "impulse_too_small",
     "imbalance_too_low",
 )
+NEGATIVE_ENTRY_FORENSICS_EDGE_BUCKETS = frozenset({"weak_lt_2", "workable_2_to_4"})
 
 
 def tune_parameters(
@@ -74,6 +98,11 @@ def tune_parameters(
         if optimizer_candidate_parameters
         else None
     )
+    optimizer_changed_keys = (
+        changed_parameter_keys(current_parameters, optimizer_candidate_parameters)
+        if optimizer_candidate_parameters
+        else []
+    )
     headroom_candidate_parameters = build_headroom_guard_candidate(
         config,
         current_parameters=current_parameters,
@@ -109,6 +138,16 @@ def tune_parameters(
     )
     min_strategy_overlay_delta_rub = Decimal(
         _env_value("SCALPER_AUTO_TUNE_MIN_STRATEGY_OVERLAY_DELTA_RUB", "0")
+    )
+    entry_forensics_edge_guard_enabled = parse_bool(
+        _env_value("SCALPER_AUTO_TUNE_USE_ENTRY_FORENSICS_EDGE_GUARD", "1"),
+        default=True,
+    )
+    entry_forensics_min_bucket_trades = int(
+        _env_value("SCALPER_AUTO_TUNE_ENTRY_FORENSICS_MIN_BUCKET_TRADES", str(min_trades))
+    )
+    entry_forensics_min_bucket_share_pct = Decimal(
+        _env_value("SCALPER_AUTO_TUNE_ENTRY_FORENSICS_MIN_BUCKET_SHARE_PCT", "25")
     )
     coverage_min_snapshots = int(_env_value("SCALPER_AUTO_TUNE_COVERAGE_MIN_SNAPSHOTS", "500"))
     coverage_max_ready_rate_pct = Decimal(_env_value("SCALPER_AUTO_TUNE_COVERAGE_MAX_READY_RATE_PCT", "0.10"))
@@ -146,6 +185,21 @@ def tune_parameters(
         if coverage_candidate_parameters
         else None
     )
+    analysis_edge_floor_candidate_parameters, analysis_edge_floor_guard = (
+        build_analysis_edge_floor_guard_candidate(
+            analysis_payload=analysis_payload,
+            current_parameters=current_parameters,
+            enabled=entry_forensics_edge_guard_enabled,
+            min_trade_count=min_trades,
+            min_bucket_trade_count=entry_forensics_min_bucket_trades,
+            min_bucket_share_pct=entry_forensics_min_bucket_share_pct,
+        )
+    )
+    analysis_edge_floor_candidate_signature = (
+        parameter_signature(analysis_edge_floor_candidate_parameters)
+        if analysis_edge_floor_candidate_parameters
+        else None
+    )
 
     common_reasons: list[str] = []
     if config.mode != "paper":
@@ -174,7 +228,7 @@ def tune_parameters(
         optimizer_reasons.append(f"optimizer_{recommendation.get('reason', 'not_eligible')}")
     if not optimizer_candidate_parameters:
         optimizer_reasons.append("missing_candidate_parameters")
-    elif optimizer_candidate_signature == current_signature:
+    elif not optimizer_changed_keys:
         optimizer_reasons.append("candidate_already_applied")
     if delta_vs_baseline_rub < min_delta_rub:
         optimizer_reasons.append("delta_below_threshold")
@@ -191,6 +245,21 @@ def tune_parameters(
         if not optimizer_collection_guard.get("passes", False):
             optimizer_reasons.append("optimizer_collection_guard_blocked")
 
+    analysis_edge_floor_reasons: list[str] = []
+    if not entry_forensics_edge_guard_enabled:
+        analysis_edge_floor_reasons.append("entry_forensics_guard_disabled")
+    if analysis_payload is None:
+        analysis_edge_floor_reasons.append("missing_analysis_report")
+    elif analysis_payload.get("status") != "ok":
+        analysis_edge_floor_reasons.append(f"analysis_{analysis_payload.get('status', 'unknown')}")
+    if analysis_edge_floor_guard.get("reason") is not None:
+        analysis_edge_floor_reasons.append(str(analysis_edge_floor_guard.get("reason")))
+    if (
+        analysis_edge_floor_candidate_signature is not None
+        and analysis_edge_floor_candidate_signature == current_signature
+    ):
+        analysis_edge_floor_reasons.append("candidate_already_applied")
+
     selected_candidate_parameters: dict[str, str] | None = None
     candidate_source: str | None = None
     if not optimizer_reasons and optimizer_candidate_parameters:
@@ -199,6 +268,9 @@ def tune_parameters(
     elif headroom_candidate_parameters:
         selected_candidate_parameters = headroom_candidate_parameters
         candidate_source = "headroom_guard"
+    elif not analysis_edge_floor_reasons and analysis_edge_floor_candidate_parameters:
+        selected_candidate_parameters = analysis_edge_floor_candidate_parameters
+        candidate_source = "analysis_edge_floor_guard"
     elif coverage_candidate_parameters:
         selected_candidate_parameters = coverage_candidate_parameters
         candidate_source = "coverage_unblocker"
@@ -332,6 +404,7 @@ def tune_parameters(
     reasons = list(common_reasons)
     if not env_updates:
         reasons.extend(optimizer_reasons)
+        reasons.extend(analysis_edge_floor_reasons)
         reasons.extend(regime_reasons)
         reasons.extend(strategy_overlay_reasons)
 
@@ -401,6 +474,11 @@ def tune_parameters(
             "regime": regime_collection_guard,
             "strategy_overlay": strategy_overlay_collection_guard,
         },
+        "analysis_edge_floor_guard": {
+            **analysis_edge_floor_guard,
+            "candidate_signature": analysis_edge_floor_candidate_signature,
+            "candidate_parameters": analysis_edge_floor_candidate_parameters,
+        },
         "coverage_fallback": {
             **coverage_fallback,
             "candidate_signature": coverage_candidate_signature,
@@ -466,6 +544,26 @@ def current_strategy_parameters(config: ScalperConfig) -> dict[str, str]:
             "time_stop_seconds": config.time_stop_seconds,
             "min_expected_edge_bps": config.min_expected_edge_bps,
             "min_net_take_profit_bps": config.min_net_take_profit_bps,
+            "adaptive_max_spread_bps": config.adaptive_max_spread_bps,
+            "adaptive_late_session_max_spread_bps": config.adaptive_late_session_max_spread_bps,
+            "adaptive_min_imbalance": config.adaptive_min_imbalance,
+            "adaptive_late_session_min_imbalance": config.adaptive_late_session_min_imbalance,
+            "adaptive_min_impulse_bps": config.adaptive_min_impulse_bps,
+            "adaptive_late_session_min_impulse_bps": config.adaptive_late_session_min_impulse_bps,
+            "adaptive_min_expected_edge_bps": config.adaptive_min_expected_edge_bps,
+            "adaptive_late_session_min_expected_edge_bps": (
+                config.adaptive_late_session_min_expected_edge_bps
+            ),
+            "adaptive_cost_headroom_floor_bps": config.adaptive_cost_headroom_floor_bps,
+            "adaptive_expected_edge_after_costs_floor_bps": (
+                config.adaptive_expected_edge_after_costs_floor_bps
+            ),
+            "adaptive_strong_expected_edge_after_costs_bps": (
+                config.adaptive_strong_expected_edge_after_costs_bps
+            ),
+            "adaptive_impulse_spread_ratio_floor": config.adaptive_impulse_spread_ratio_floor,
+            "adaptive_strong_impulse_spread_ratio": config.adaptive_strong_impulse_spread_ratio,
+            "adaptive_workable_time_stop_seconds": config.adaptive_workable_time_stop_seconds,
             "cooldown_seconds": config.cooldown_seconds,
             "paper_ticker_guard_cooldown_seconds": config.paper_ticker_guard_cooldown_seconds,
         }
@@ -659,6 +757,107 @@ def load_collection_guard_policy() -> CollectionGuardPolicy:
     )
 
 
+def build_analysis_edge_floor_guard_candidate(
+    *,
+    analysis_payload: dict[str, Any] | None,
+    current_parameters: dict[str, Any],
+    enabled: bool,
+    min_trade_count: int,
+    min_bucket_trade_count: int,
+    min_bucket_share_pct: Decimal,
+) -> tuple[dict[str, str] | None, dict[str, Any]]:
+    details: dict[str, Any] = {
+        "enabled": enabled,
+        "eligible": False,
+        "reason": None,
+        "assessment": None,
+        "trade_count": 0,
+        "worst_entry_tier": None,
+        "worst_edge_bucket": None,
+        "bucket_trade_count": 0,
+        "bucket_trade_share_pct": None,
+        "bucket_expectancy_rub": None,
+        "avg_expected_edge_after_costs_bps": None,
+        "min_trade_count": min_trade_count,
+        "min_bucket_trade_count": min_bucket_trade_count,
+        "min_bucket_share_pct": str(min_bucket_share_pct),
+    }
+    if not enabled:
+        details["reason"] = "entry_forensics_guard_disabled"
+        return None, details
+    if analysis_payload is None:
+        details["reason"] = "missing_analysis_report"
+        return None, details
+    if analysis_payload.get("status") != "ok":
+        details["reason"] = f"analysis_{analysis_payload.get('status', 'unknown')}"
+        return None, details
+
+    details["assessment"] = analysis_payload.get("assessment")
+    if details["assessment"] != "negative_expectancy_so_far":
+        details["reason"] = "entry_forensics_assessment_not_negative"
+        return None, details
+
+    entry_forensics = dict(analysis_payload.get("entry_forensics") or {})
+    summary = dict(entry_forensics.get("summary") or {})
+    trade_count = int(summary.get("trade_count", 0) or 0)
+    details["trade_count"] = trade_count
+    details["worst_entry_tier"] = summary.get("worst_entry_tier")
+    details["worst_edge_bucket"] = summary.get("worst_edge_bucket")
+    if trade_count < min_trade_count:
+        details["reason"] = "entry_forensics_insufficient_trade_sample"
+        return None, details
+    if details["worst_entry_tier"] != "workable":
+        details["reason"] = "entry_forensics_worst_entry_tier_not_workable"
+        return None, details
+    if details["worst_edge_bucket"] not in NEGATIVE_ENTRY_FORENSICS_EDGE_BUCKETS:
+        details["reason"] = "entry_forensics_edge_bucket_not_targeted"
+        return None, details
+
+    bucket_stats = find_ranked_breakdown_item(
+        entry_forensics.get("by_expected_edge_after_costs_bucket"),
+        str(details["worst_edge_bucket"]),
+    )
+    if bucket_stats is None:
+        details["reason"] = "entry_forensics_bucket_missing_from_breakdown"
+        return None, details
+
+    bucket_trade_count = int(bucket_stats.get("trade_count", 0) or 0)
+    bucket_trade_share_pct = (
+        (Decimal(bucket_trade_count) / Decimal(trade_count) * Decimal("100"))
+        if trade_count > 0
+        else Decimal("0")
+    )
+    bucket_expectancy_rub = Decimal(str(bucket_stats.get("expectancy_rub", "0") or "0"))
+    avg_expected_edge_after_costs_bps = Decimal(
+        str(bucket_stats.get("avg_expected_edge_after_costs_bps", "0") or "0")
+    )
+    details["bucket_trade_count"] = bucket_trade_count
+    details["bucket_trade_share_pct"] = str(bucket_trade_share_pct.quantize(Decimal("0.01")))
+    details["bucket_expectancy_rub"] = str(bucket_expectancy_rub)
+    details["avg_expected_edge_after_costs_bps"] = str(avg_expected_edge_after_costs_bps)
+    if bucket_trade_count < min_bucket_trade_count:
+        details["reason"] = "entry_forensics_bucket_trade_sample_too_small"
+        return None, details
+    if bucket_trade_share_pct < min_bucket_share_pct:
+        details["reason"] = "entry_forensics_bucket_share_too_small"
+        return None, details
+    if bucket_expectancy_rub >= 0:
+        details["reason"] = "entry_forensics_bucket_not_negative"
+        return None, details
+
+    candidate = normalize_parameters(current_parameters)
+    current_floor = Decimal(candidate.get("adaptive_expected_edge_after_costs_floor_bps", "0"))
+    next_floor = _step_up_decimal(current_floor, ADAPTIVE_EXPECTED_EDGE_AFTER_COSTS_FLOOR_STEPS)
+    if next_floor is None:
+        details["reason"] = "entry_forensics_no_stricter_floor_available"
+        return None, details
+    candidate["adaptive_expected_edge_after_costs_floor_bps"] = str(next_floor)
+    details["eligible"] = True
+    details["reason"] = "analysis_edge_floor_guard_candidate"
+    details["next_floor_bps"] = str(next_floor)
+    return candidate, details
+
+
 def build_unblocker_step_candidate(
     *,
     current_parameters: dict[str, Any],
@@ -673,6 +872,13 @@ def build_unblocker_step_candidate(
         if next_value is None:
             return None
         candidate["min_expected_edge_bps"] = str(next_value)
+        _sync_late_threshold(
+            candidate,
+            current_parameters=current_parameters,
+            base_key="adaptive_min_expected_edge_bps",
+            late_key="adaptive_late_session_min_expected_edge_bps",
+            next_base=next_value,
+        )
         return candidate
     if dominant_block_reason == "impulse_too_small":
         next_value = _step_down_decimal(
@@ -682,6 +888,13 @@ def build_unblocker_step_candidate(
         if next_value is None:
             return None
         candidate["min_impulse_bps"] = str(next_value)
+        _sync_late_threshold(
+            candidate,
+            current_parameters=current_parameters,
+            base_key="adaptive_min_impulse_bps",
+            late_key="adaptive_late_session_min_impulse_bps",
+            next_base=next_value,
+        )
         return candidate
     if dominant_block_reason == "imbalance_too_low":
         next_value = _step_down_decimal(
@@ -691,8 +904,40 @@ def build_unblocker_step_candidate(
         if next_value is None:
             return None
         candidate["min_imbalance"] = str(next_value)
+        _sync_late_threshold(
+            candidate,
+            current_parameters=current_parameters,
+            base_key="adaptive_min_imbalance",
+            late_key="adaptive_late_session_min_imbalance",
+            next_base=next_value,
+        )
         return candidate
     return None
+
+
+def find_ranked_breakdown_item(section: Any, key: str) -> dict[str, Any] | None:
+    if not isinstance(section, dict):
+        return None
+    for part in ("worst", "best"):
+        for item in list(section.get(part) or []):
+            if str(item.get("key")) == key:
+                return dict(item)
+    return None
+
+
+def _sync_late_threshold(
+    candidate: dict[str, str],
+    *,
+    current_parameters: dict[str, Any],
+    base_key: str,
+    late_key: str,
+    next_base: Decimal,
+) -> None:
+    current_base = Decimal(str(current_parameters.get(base_key, str(next_base)) or next_base))
+    current_late = Decimal(str(current_parameters.get(late_key, str(current_base)) or current_base))
+    late_delta = max(Decimal("0"), current_late - current_base)
+    candidate[base_key] = str(next_base)
+    candidate[late_key] = str(next_base + late_delta)
 
 
 def _step_down_decimal(current: Decimal, steps: tuple[Decimal, ...]) -> Decimal | None:
@@ -703,6 +948,13 @@ def _step_down_decimal(current: Decimal, steps: tuple[Decimal, ...]) -> Decimal 
             return previous
         previous = value
     return previous if previous is not None and previous < current else None
+
+
+def _step_up_decimal(current: Decimal, steps: tuple[Decimal, ...]) -> Decimal | None:
+    for value in sorted(steps):
+        if value > current:
+            return value
+    return None
 
 
 def update_env_file(path: Path, updates: dict[str, str]) -> None:

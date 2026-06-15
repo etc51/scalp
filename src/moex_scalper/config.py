@@ -31,6 +31,20 @@ TRACKED_STRATEGY_PROFILE_KEYS = frozenset(
         "SCALPER_MIN_EXPECTED_EDGE_BPS",
         "SCALPER_MIN_NET_TAKE_PROFIT_BPS",
         "SCALPER_TARGET_NET_TAKE_PROFIT_BUFFER_BPS",
+        "SCALPER_ADAPTIVE_MAX_SPREAD_BPS",
+        "SCALPER_ADAPTIVE_LATE_SESSION_MAX_SPREAD_BPS",
+        "SCALPER_ADAPTIVE_MIN_IMBALANCE",
+        "SCALPER_ADAPTIVE_LATE_SESSION_MIN_IMBALANCE",
+        "SCALPER_ADAPTIVE_MIN_IMPULSE_BPS",
+        "SCALPER_ADAPTIVE_LATE_SESSION_MIN_IMPULSE_BPS",
+        "SCALPER_ADAPTIVE_MIN_EXPECTED_EDGE_BPS",
+        "SCALPER_ADAPTIVE_LATE_SESSION_MIN_EXPECTED_EDGE_BPS",
+        "SCALPER_ADAPTIVE_COST_HEADROOM_FLOOR_BPS",
+        "SCALPER_ADAPTIVE_EXPECTED_EDGE_AFTER_COSTS_FLOOR_BPS",
+        "SCALPER_ADAPTIVE_STRONG_EXPECTED_EDGE_AFTER_COSTS_BPS",
+        "SCALPER_ADAPTIVE_IMPULSE_SPREAD_RATIO_FLOOR",
+        "SCALPER_ADAPTIVE_STRONG_IMPULSE_SPREAD_RATIO",
+        "SCALPER_ADAPTIVE_WORKABLE_TIME_STOP_SECONDS",
         "SCALPER_COOLDOWN_SECONDS",
         "SCALPER_REGIME_FILTER_MODE",
         "SCALPER_STRATEGY_OVERLAY_MODE",
@@ -252,6 +266,20 @@ class ScalperConfig:
     watchdog_market_data_warmup_seconds: int
     watchdog_timeout_seconds: float
     watchdog_check_dashboard_http: bool
+    adaptive_max_spread_bps: Decimal = Decimal("2.5")
+    adaptive_late_session_max_spread_bps: Decimal = Decimal("2.0")
+    adaptive_min_imbalance: Decimal = Decimal("0.52")
+    adaptive_late_session_min_imbalance: Decimal = Decimal("0.55")
+    adaptive_min_impulse_bps: Decimal = Decimal("1.5")
+    adaptive_late_session_min_impulse_bps: Decimal = Decimal("2.0")
+    adaptive_min_expected_edge_bps: Decimal = Decimal("6")
+    adaptive_late_session_min_expected_edge_bps: Decimal = Decimal("8")
+    adaptive_cost_headroom_floor_bps: Decimal = Decimal("4")
+    adaptive_expected_edge_after_costs_floor_bps: Decimal = Decimal("2.0")
+    adaptive_strong_expected_edge_after_costs_bps: Decimal = Decimal("4.0")
+    adaptive_impulse_spread_ratio_floor: Decimal = Decimal("1.25")
+    adaptive_strong_impulse_spread_ratio: Decimal = Decimal("2.0")
+    adaptive_workable_time_stop_seconds: float = 14.0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -393,5 +421,42 @@ def load_config(args: argparse.Namespace, *, require_auth: bool = True) -> Scalp
         watchdog_check_dashboard_http=parse_bool(
             os.getenv("SCALPER_WATCHDOG_CHECK_DASHBOARD_HTTP", "1"),
             default=True,
+        ),
+        adaptive_max_spread_bps=Decimal(os.getenv("SCALPER_ADAPTIVE_MAX_SPREAD_BPS", "2.5")),
+        adaptive_late_session_max_spread_bps=Decimal(
+            os.getenv("SCALPER_ADAPTIVE_LATE_SESSION_MAX_SPREAD_BPS", "2.0")
+        ),
+        adaptive_min_imbalance=Decimal(os.getenv("SCALPER_ADAPTIVE_MIN_IMBALANCE", "0.52")),
+        adaptive_late_session_min_imbalance=Decimal(
+            os.getenv("SCALPER_ADAPTIVE_LATE_SESSION_MIN_IMBALANCE", "0.55")
+        ),
+        adaptive_min_impulse_bps=Decimal(os.getenv("SCALPER_ADAPTIVE_MIN_IMPULSE_BPS", "1.5")),
+        adaptive_late_session_min_impulse_bps=Decimal(
+            os.getenv("SCALPER_ADAPTIVE_LATE_SESSION_MIN_IMPULSE_BPS", "2.0")
+        ),
+        adaptive_min_expected_edge_bps=Decimal(
+            os.getenv("SCALPER_ADAPTIVE_MIN_EXPECTED_EDGE_BPS", "6")
+        ),
+        adaptive_late_session_min_expected_edge_bps=Decimal(
+            os.getenv("SCALPER_ADAPTIVE_LATE_SESSION_MIN_EXPECTED_EDGE_BPS", "8")
+        ),
+        adaptive_cost_headroom_floor_bps=Decimal(
+            os.getenv("SCALPER_ADAPTIVE_COST_HEADROOM_FLOOR_BPS", "4")
+        ),
+        adaptive_expected_edge_after_costs_floor_bps=Decimal(
+            os.getenv("SCALPER_ADAPTIVE_EXPECTED_EDGE_AFTER_COSTS_FLOOR_BPS", "2.0")
+        ),
+        adaptive_strong_expected_edge_after_costs_bps=Decimal(
+            os.getenv("SCALPER_ADAPTIVE_STRONG_EXPECTED_EDGE_AFTER_COSTS_BPS", "4.0")
+        ),
+        adaptive_impulse_spread_ratio_floor=Decimal(
+            os.getenv("SCALPER_ADAPTIVE_IMPULSE_SPREAD_RATIO_FLOOR", "1.25")
+        ),
+        adaptive_strong_impulse_spread_ratio=Decimal(
+            os.getenv("SCALPER_ADAPTIVE_STRONG_IMPULSE_SPREAD_RATIO", "2.0")
+        ),
+        adaptive_workable_time_stop_seconds=max(
+            1.0,
+            float(os.getenv("SCALPER_ADAPTIVE_WORKABLE_TIME_STOP_SECONDS", "14")),
         ),
     )

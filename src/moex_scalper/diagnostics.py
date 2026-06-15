@@ -124,6 +124,26 @@ def build_strategy_diagnostics(config: ScalperConfig) -> dict[str, Any]:
         "expected_edge_constraint_met": expected_edge_constraint_met,
         "min_expected_edge_bps": str(config.min_expected_edge_bps),
         "min_net_take_profit_bps": str(config.min_net_take_profit_bps),
+        "adaptive_max_spread_bps": str(config.adaptive_max_spread_bps),
+        "adaptive_late_session_max_spread_bps": str(config.adaptive_late_session_max_spread_bps),
+        "adaptive_min_imbalance": str(config.adaptive_min_imbalance),
+        "adaptive_late_session_min_imbalance": str(config.adaptive_late_session_min_imbalance),
+        "adaptive_min_impulse_bps": str(config.adaptive_min_impulse_bps),
+        "adaptive_late_session_min_impulse_bps": str(config.adaptive_late_session_min_impulse_bps),
+        "adaptive_min_expected_edge_bps": str(config.adaptive_min_expected_edge_bps),
+        "adaptive_late_session_min_expected_edge_bps": str(
+            config.adaptive_late_session_min_expected_edge_bps
+        ),
+        "adaptive_cost_headroom_floor_bps": str(config.adaptive_cost_headroom_floor_bps),
+        "adaptive_expected_edge_after_costs_floor_bps": str(
+            config.adaptive_expected_edge_after_costs_floor_bps
+        ),
+        "adaptive_strong_expected_edge_after_costs_bps": str(
+            config.adaptive_strong_expected_edge_after_costs_bps
+        ),
+        "adaptive_impulse_spread_ratio_floor": str(config.adaptive_impulse_spread_ratio_floor),
+        "adaptive_strong_impulse_spread_ratio": str(config.adaptive_strong_impulse_spread_ratio),
+        "adaptive_workable_time_stop_seconds": str(config.adaptive_workable_time_stop_seconds),
         "paper_risk_profile": paper_risk_profile,
         "net_take_profit_buffer_bps": str(net_take_profit_buffer_bps),
         "target_net_take_profit_buffer_bps": str(target_net_take_profit_buffer_bps),

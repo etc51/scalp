@@ -392,6 +392,10 @@ def score_tuning_action(
         score += Decimal("95")
         details["score_components"].append("coverage_unblocker=95")
         details["selection_reason"] = details["selection_reason"] or "coverage_unblocker"
+    if "analysis_edge_floor_guard" in sources:
+        score += Decimal("70")
+        details["score_components"].append("analysis_edge_floor_guard=70")
+        details["selection_reason"] = details["selection_reason"] or "analysis_edge_floor_guard"
     if "optimizer" in sources:
         score += Decimal("35")
         details["score_components"].append("optimizer_candidate=35")

@@ -266,6 +266,85 @@ class AdaptiveStrategyTests(unittest.TestCase):
         self.assertEqual(metrics["entry_tier"], "workable")
         self.assertEqual(metrics["effective_time_stop_seconds"], "14.0")
 
+    def test_configured_adaptive_post_cost_floor_can_block_workable_entry(self) -> None:
+        config = replace(
+            build_config(mode="paper"),
+            max_spread_bps=Decimal("1.5"),
+            adaptive_expected_edge_after_costs_floor_bps=Decimal("3.5"),
+        )
+        strategy = ModerateScalpingStrategy(config)
+        instrument = build_instrument()
+        start = datetime(2026, 6, 15, 10, 15, tzinfo=timezone.utc)
+
+        strategy.diagnose_entry(
+            build_snapshot(
+                instrument,
+                start,
+                bid_price="99.99",
+                ask_price="100.01",
+            ),
+            has_open_position=False,
+        )
+        signal, reason, metrics = strategy.diagnose_entry(
+            build_snapshot(
+                instrument,
+                start + timedelta(seconds=2),
+                bid_price="100.03",
+                ask_price="100.05",
+            ),
+            has_open_position=False,
+        )
+
+        self.assertIsNone(signal)
+        self.assertEqual(reason, "expected_edge_too_low")
+        self.assertEqual(metrics["entry_profile"], "adaptive")
+        self.assertEqual(
+            Decimal(str(metrics["adaptive_expected_edge_after_costs_floor_bps"])),
+            Decimal("3.5"),
+        )
+        self.assertLess(
+            Decimal(str(metrics["expected_edge_after_costs_bps"])),
+            Decimal("3.5"),
+        )
+
+    def test_configured_adaptive_workable_time_stop_is_used(self) -> None:
+        config = replace(
+            build_config(mode="paper"),
+            max_spread_bps=Decimal("1.5"),
+            take_profit_bps=Decimal("14"),
+            time_stop_seconds=20.0,
+            adaptive_workable_time_stop_seconds=6.0,
+        )
+        strategy = ModerateScalpingStrategy(config)
+        instrument = build_instrument()
+        start = datetime(2026, 6, 15, 10, 15, tzinfo=timezone.utc)
+
+        strategy.diagnose_entry(
+            build_snapshot(
+                instrument,
+                start,
+                bid_price="99.99",
+                ask_price="100.01",
+            ),
+            has_open_position=False,
+        )
+        signal, reason, metrics = strategy.diagnose_entry(
+            build_snapshot(
+                instrument,
+                start + timedelta(seconds=2),
+                bid_price="100.033",
+                ask_price="100.051",
+            ),
+            has_open_position=False,
+        )
+
+        self.assertEqual(reason, "ok")
+        assert signal is not None
+        self.assertEqual(signal.profile, "adaptive")
+        self.assertEqual(signal.time_stop_seconds, 6.0)
+        self.assertEqual(metrics["entry_tier"], "workable")
+        self.assertEqual(metrics["effective_time_stop_seconds"], "6.0")
+
     def test_paper_mode_blocks_adaptive_micro_impulse_noise(self) -> None:
         strategy = ModerateScalpingStrategy(build_config(mode="paper"))
         instrument = build_instrument()
