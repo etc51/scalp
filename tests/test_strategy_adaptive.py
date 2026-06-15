@@ -458,6 +458,117 @@ class AdaptiveStrategyTests(unittest.TestCase):
         assert exit_decision is not None
         self.assertEqual(exit_decision.reason, "time_stop")
 
+    def test_adaptive_fail_fast_cuts_dead_trade_before_base_timeout(self) -> None:
+        strategy = ModerateScalpingStrategy(build_config(mode="paper"))
+        instrument = build_instrument()
+        opened_at = datetime(2026, 6, 15, 10, 15, tzinfo=timezone.utc)
+        position = Position(
+            instrument=instrument,
+            side=Side.BUY,
+            quantity_lots=1,
+            entry_price=Decimal("100"),
+            opened_at=opened_at,
+            take_profit_bps=Decimal("50"),
+            stop_loss_bps=Decimal("10"),
+            time_stop_seconds=8.0,
+            entry_fee_rub=Decimal("0.4"),
+            reason="profile=adaptive",
+            metadata={"entry_profile": "adaptive", "entry_spread_bps": "1.0"},
+        )
+
+        snapshot = build_snapshot(
+            instrument,
+            opened_at + timedelta(seconds=6),
+            bid_price="99.99",
+            ask_price="100.00",
+            bid_quantity=150,
+            ask_quantity=150,
+        )
+
+        exit_decision = strategy.evaluate_exit(position, snapshot)
+        assert exit_decision is not None
+        self.assertEqual(exit_decision.reason, "adaptive_fail_fast")
+
+    def test_adaptive_time_stop_extends_when_trade_shows_proof_of_life(self) -> None:
+        strategy = ModerateScalpingStrategy(build_config(mode="paper"))
+        instrument = build_instrument()
+        opened_at = datetime(2026, 6, 15, 10, 15, tzinfo=timezone.utc)
+        position = Position(
+            instrument=instrument,
+            side=Side.BUY,
+            quantity_lots=1,
+            entry_price=Decimal("100"),
+            opened_at=opened_at,
+            take_profit_bps=Decimal("50"),
+            stop_loss_bps=Decimal("10"),
+            time_stop_seconds=8.0,
+            entry_fee_rub=Decimal("0.4"),
+            reason="profile=adaptive",
+            metadata={"entry_profile": "adaptive", "entry_spread_bps": "0.8"},
+        )
+
+        warmup_snapshot = build_snapshot(
+            instrument,
+            opened_at + timedelta(seconds=4),
+            bid_price="100.06",
+            ask_price="100.07",
+            bid_quantity=240,
+            ask_quantity=80,
+        )
+        soft_timeout_snapshot = build_snapshot(
+            instrument,
+            opened_at + timedelta(seconds=8),
+            bid_price="100.06",
+            ask_price="100.07",
+            bid_quantity=250,
+            ask_quantity=70,
+        )
+        hard_timeout_snapshot = build_snapshot(
+            instrument,
+            opened_at + timedelta(seconds=14),
+            bid_price="100.06",
+            ask_price="100.07",
+            bid_quantity=250,
+            ask_quantity=70,
+        )
+
+        self.assertIsNone(strategy.evaluate_exit(position, warmup_snapshot))
+        self.assertIsNone(strategy.evaluate_exit(position, soft_timeout_snapshot))
+        hard_exit = strategy.evaluate_exit(position, hard_timeout_snapshot)
+        assert hard_exit is not None
+        self.assertEqual(hard_exit.reason, "time_stop")
+
+    def test_adaptive_time_stop_does_not_extend_without_enough_proof(self) -> None:
+        strategy = ModerateScalpingStrategy(build_config(mode="paper"))
+        instrument = build_instrument()
+        opened_at = datetime(2026, 6, 15, 10, 15, tzinfo=timezone.utc)
+        position = Position(
+            instrument=instrument,
+            side=Side.BUY,
+            quantity_lots=1,
+            entry_price=Decimal("100"),
+            opened_at=opened_at,
+            take_profit_bps=Decimal("50"),
+            stop_loss_bps=Decimal("10"),
+            time_stop_seconds=8.0,
+            entry_fee_rub=Decimal("0.4"),
+            reason="profile=adaptive",
+            metadata={"entry_profile": "adaptive", "entry_spread_bps": "1.0"},
+        )
+
+        snapshot = build_snapshot(
+            instrument,
+            opened_at + timedelta(seconds=8),
+            bid_price="100.03",
+            ask_price="100.04",
+            bid_quantity=150,
+            ask_quantity=150,
+        )
+
+        exit_decision = strategy.evaluate_exit(position, snapshot)
+        assert exit_decision is not None
+        self.assertEqual(exit_decision.reason, "time_stop")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -27,6 +27,17 @@ ADAPTIVE_SCRATCH_MAX_SECONDS = 8.0
 ADAPTIVE_SCRATCH_MIN_ADVERSE_BPS = Decimal("2")
 ADAPTIVE_SCRATCH_LONG_OPPOSING_IMBALANCE = Decimal("0.46")
 ADAPTIVE_SCRATCH_SHORT_OPPOSING_IMBALANCE = Decimal("0.54")
+ADAPTIVE_FAIL_FAST_MIN_SECONDS = 6.0
+ADAPTIVE_FAIL_FAST_MAX_SECONDS = 12.0
+ADAPTIVE_FAIL_FAST_STOP_LOSS_SHARE = Decimal("0.20")
+ADAPTIVE_PROOF_MIN_MFE_BPS = Decimal("2.5")
+ADAPTIVE_PROOF_FLOW_LONG_IMBALANCE = Decimal("0.52")
+ADAPTIVE_PROOF_FLOW_SHORT_IMBALANCE = Decimal("0.48")
+ADAPTIVE_PROOF_TWAP_GAP_BPS = Decimal("1.0")
+ADAPTIVE_EXTENSION_MIN_SECONDS = 6.0
+ADAPTIVE_EXTENSION_MAX_SECONDS = 10.0
+ADAPTIVE_EXTENSION_MAX_ADVERSE_STOP_LOSS_SHARE = Decimal("0.25")
+ADAPTIVE_EXTENSION_REQUIRED_PROOFS = 2
 
 
 @dataclass(slots=True)
@@ -277,6 +288,8 @@ class ModerateScalpingStrategy:
         ), "ok", metrics
 
     def evaluate_exit(self, position: Position, snapshot: MarketSnapshot) -> ExitDecision | None:
+        state = self._state_for(snapshot.instrument.instrument_id)
+        self._update_minute_state(state, snapshot)
         current_price: Decimal
         if position.side is Side.BUY:
             if snapshot.bid_price <= 0:
@@ -307,6 +320,8 @@ class ModerateScalpingStrategy:
             if current_price >= stop_price:
                 return ExitDecision(reason="stop_loss")
         elapsed_seconds = (snapshot.at - position.opened_at).total_seconds()
+        directional_move_bps = self._directional_move_bps(position, current_price=current_price)
+        self._update_position_tracking(position, directional_move_bps=directional_move_bps)
         scratch_exit = self._maybe_adaptive_scratch(
             position,
             snapshot=snapshot,
@@ -315,6 +330,16 @@ class ModerateScalpingStrategy:
         )
         if scratch_exit is not None:
             return scratch_exit
+        fail_fast_exit = self._maybe_adaptive_fail_fast(
+            position,
+            snapshot=snapshot,
+            state=state,
+            current_price=current_price,
+            directional_move_bps=directional_move_bps,
+            elapsed_seconds=elapsed_seconds,
+        )
+        if fail_fast_exit is not None:
+            return fail_fast_exit
         if elapsed_seconds < position.time_stop_seconds:
             return None
 
@@ -323,6 +348,18 @@ class ModerateScalpingStrategy:
             current_price * Decimal(position.instrument.lot_size) * Decimal(position.quantity_lots)
         )
         estimated_net_pnl_rub = gross_pnl_rub - position.entry_fee_rub - estimated_exit_fee_rub
+        adaptive_timeout_exit = self._maybe_adaptive_timeout_extension(
+            position,
+            snapshot=snapshot,
+            state=state,
+            current_price=current_price,
+            directional_move_bps=directional_move_bps,
+            gross_pnl_rub=gross_pnl_rub,
+            estimated_net_pnl_rub=estimated_net_pnl_rub,
+            elapsed_seconds=elapsed_seconds,
+        )
+        if adaptive_timeout_exit is not None:
+            return adaptive_timeout_exit
         if gross_pnl_rub <= 0:
             return ExitDecision(reason="time_stop")
         if estimated_net_pnl_rub >= 0:
@@ -363,6 +400,92 @@ class ModerateScalpingStrategy:
             return ExitDecision(reason="adaptive_scratch")
         if directional_move_bps <= -adverse_move_floor_bps:
             return ExitDecision(reason="adaptive_scratch")
+        return None
+
+    def _maybe_adaptive_fail_fast(
+        self,
+        position: Position,
+        *,
+        snapshot: MarketSnapshot,
+        state: InstrumentMomentumState,
+        current_price: Decimal,
+        directional_move_bps: Decimal,
+        elapsed_seconds: float,
+    ) -> ExitDecision | None:
+        if not self._is_adaptive_position(position):
+            return None
+        fail_fast_seconds = min(
+            ADAPTIVE_FAIL_FAST_MAX_SECONDS,
+            max(ADAPTIVE_FAIL_FAST_MIN_SECONDS, position.time_stop_seconds * 0.60),
+        )
+        if elapsed_seconds < fail_fast_seconds or elapsed_seconds >= position.time_stop_seconds:
+            return None
+
+        proof = self._evaluate_adaptive_proof_of_life(
+            position,
+            snapshot=snapshot,
+            state=state,
+            current_price=current_price,
+            directional_move_bps=directional_move_bps,
+        )
+        opposing_imbalance = self._is_opposing_imbalance(position.side, snapshot.imbalance)
+        adverse_move_floor_bps = max(
+            Decimal("0.5"),
+            position.stop_loss_bps * ADAPTIVE_FAIL_FAST_STOP_LOSS_SHARE,
+        )
+        mfe_bps = self._metadata_decimal(position.metadata.get("max_favorable_bps")) or Decimal("0")
+        if (
+            proof["proof_count"] <= 0
+            and mfe_bps < proof["mfe_floor_bps"]
+            and directional_move_bps <= Decimal("0")
+        ):
+            return ExitDecision(reason="adaptive_fail_fast")
+        if proof["proof_count"] <= 1 and opposing_imbalance and directional_move_bps <= -adverse_move_floor_bps:
+            return ExitDecision(reason="adaptive_fail_fast")
+        return None
+
+    def _maybe_adaptive_timeout_extension(
+        self,
+        position: Position,
+        *,
+        snapshot: MarketSnapshot,
+        state: InstrumentMomentumState,
+        current_price: Decimal,
+        directional_move_bps: Decimal,
+        gross_pnl_rub: Decimal,
+        estimated_net_pnl_rub: Decimal,
+        elapsed_seconds: float,
+    ) -> ExitDecision | None:
+        if not self._is_adaptive_position(position):
+            return None
+        if estimated_net_pnl_rub >= 0:
+            return ExitDecision(reason="time_stop")
+
+        proof = self._evaluate_adaptive_proof_of_life(
+            position,
+            snapshot=snapshot,
+            state=state,
+            current_price=current_price,
+            directional_move_bps=directional_move_bps,
+        )
+        allowed_adverse_bps = max(
+            Decimal("0.5"),
+            position.stop_loss_bps * ADAPTIVE_EXTENSION_MAX_ADVERSE_STOP_LOSS_SHARE,
+        )
+        extension_seconds = min(
+            ADAPTIVE_EXTENSION_MAX_SECONDS,
+            max(ADAPTIVE_EXTENSION_MIN_SECONDS, position.time_stop_seconds * 0.50),
+        )
+        hard_timeout_seconds = position.time_stop_seconds + extension_seconds
+
+        if proof["proof_count"] < ADAPTIVE_EXTENSION_REQUIRED_PROOFS:
+            return ExitDecision(reason="time_stop")
+        if directional_move_bps <= -allowed_adverse_bps:
+            return ExitDecision(reason="time_stop")
+        if gross_pnl_rub <= 0 and proof["friction_paid"] is False:
+            return ExitDecision(reason="time_stop")
+        if elapsed_seconds >= hard_timeout_seconds:
+            return ExitDecision(reason="time_stop")
         return None
 
     def _estimate_gross_pnl_rub(self, position: Position, *, current_price: Decimal) -> Decimal:
@@ -413,6 +536,109 @@ class ModerateScalpingStrategy:
         state.current_minute_high = mid_price
         state.current_minute_low = mid_price
         state.current_minute_close = mid_price
+
+    def _is_adaptive_position(self, position: Position) -> bool:
+        entry_profile = str(position.metadata.get("entry_profile") or "").lower()
+        if entry_profile == "adaptive":
+            return True
+        return "profile=adaptive" in str(position.reason)
+
+    def _directional_move_bps(self, position: Position, *, current_price: Decimal) -> Decimal:
+        if position.side is Side.BUY:
+            return ((current_price / position.entry_price) - Decimal("1")) * Decimal("10000")
+        return ((position.entry_price / current_price) - Decimal("1")) * Decimal("10000")
+
+    def _update_position_tracking(self, position: Position, *, directional_move_bps: Decimal) -> None:
+        existing_max = self._metadata_decimal(position.metadata.get("max_favorable_bps"))
+        existing_min = self._metadata_decimal(position.metadata.get("min_directional_bps"))
+        next_max = directional_move_bps if existing_max is None else max(existing_max, directional_move_bps)
+        next_min = directional_move_bps if existing_min is None else min(existing_min, directional_move_bps)
+        position.metadata["max_favorable_bps"] = str(next_max)
+        position.metadata["min_directional_bps"] = str(next_min)
+
+    def _evaluate_adaptive_proof_of_life(
+        self,
+        position: Position,
+        *,
+        snapshot: MarketSnapshot,
+        state: InstrumentMomentumState,
+        current_price: Decimal,
+        directional_move_bps: Decimal,
+    ) -> dict[str, object]:
+        indicator_state = self._current_indicator_state(state)
+        session_twap_gap_bps = self._coerce_decimal(indicator_state.get("session_twap_gap_bps"))
+        entry_spread_bps = self._metadata_decimal(position.metadata.get("entry_spread_bps")) or Decimal("0")
+        mfe_bps = self._metadata_decimal(position.metadata.get("max_favorable_bps")) or directional_move_bps
+        mfe_floor_bps = max(
+            ADAPTIVE_PROOF_MIN_MFE_BPS,
+            entry_spread_bps + Decimal("0.75"),
+        )
+        friction_paid = mfe_bps >= mfe_floor_bps
+        flow_support = self._is_flow_supportive(position.side, snapshot.imbalance)
+        twap_support = False
+        if session_twap_gap_bps is not None:
+            if position.side is Side.BUY:
+                twap_support = session_twap_gap_bps >= ADAPTIVE_PROOF_TWAP_GAP_BPS
+            else:
+                twap_support = session_twap_gap_bps <= -ADAPTIVE_PROOF_TWAP_GAP_BPS
+        proof_count = sum(1 for flag in (friction_paid, flow_support, twap_support) if flag)
+        position.metadata["last_proof_of_life_count"] = str(proof_count)
+        position.metadata["last_session_twap_gap_bps"] = (
+            str(session_twap_gap_bps) if session_twap_gap_bps is not None else ""
+        )
+        return {
+            "proof_count": proof_count,
+            "friction_paid": friction_paid,
+            "flow_support": flow_support,
+            "twap_support": twap_support,
+            "mfe_floor_bps": mfe_floor_bps,
+        }
+
+    def _current_indicator_state(self, state: InstrumentMomentumState) -> dict[str, Decimal | str | None]:
+        bars = list(state.completed_minute_bars)
+        if (
+            state.current_minute_at is not None
+            and state.current_minute_open is not None
+            and state.current_minute_high is not None
+            and state.current_minute_low is not None
+            and state.current_minute_close is not None
+        ):
+            bars.append(
+                MinuteBar(
+                    at=state.current_minute_at,
+                    open=state.current_minute_open,
+                    high=state.current_minute_high,
+                    low=state.current_minute_low,
+                    close=state.current_minute_close,
+                )
+            )
+        if not bars:
+            return {}
+        return compute_overlay_indicator_state(bars)
+
+    def _is_flow_supportive(self, side: Side, imbalance: Decimal) -> bool:
+        if side is Side.BUY:
+            return imbalance >= ADAPTIVE_PROOF_FLOW_LONG_IMBALANCE
+        return imbalance <= ADAPTIVE_PROOF_FLOW_SHORT_IMBALANCE
+
+    def _is_opposing_imbalance(self, side: Side, imbalance: Decimal) -> bool:
+        if side is Side.BUY:
+            return imbalance <= ADAPTIVE_PROOF_FLOW_SHORT_IMBALANCE
+        return imbalance >= ADAPTIVE_PROOF_FLOW_LONG_IMBALANCE
+
+    def _coerce_decimal(self, value: object) -> Decimal | None:
+        try:
+            if value is None or value == "":
+                return None
+            decimal_value = Decimal(str(value))
+        except Exception:  # noqa: BLE001
+            return None
+        if decimal_value.is_nan():
+            return None
+        return decimal_value
+
+    def _metadata_decimal(self, value: object) -> Decimal | None:
+        return self._coerce_decimal(value)
 
     def _check_regime_filter(
         self,
