@@ -7,6 +7,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from .collection_guard import CollectionGuardPolicy, evaluate_collection_guard
 from .config import ScalperConfig, parse_bool
 from .market_history import load_snapshots_from_paths
 from .optimizer import filter_snapshots_for_entry_window, resolve_snapshot_files, simulate_candidate
@@ -59,6 +60,7 @@ def build_restrictions(
     coverage_min_dominant_block_share_pct = Decimal(
         _env_value("SCALPER_RESTRICTION_COVERAGE_MIN_BLOCK_SHARE_PCT", "65")
     )
+    collection_guard_policy = load_collection_guard_policy()
     coverage_allowed_reasons = tuple(
         _parse_csv(_env_value("SCALPER_RESTRICTION_COVERAGE_ALLOWED_BLOCK_REASONS"))
         or DEFAULT_COVERAGE_ALLOWED_BLOCK_REASONS
@@ -125,6 +127,7 @@ def build_restrictions(
             ticker_hour_candidates=ticker_hour_candidates,
             ticker_candidates=ticker_candidates,
             hour_candidates=hour_candidates,
+            collection_guard_policy=collection_guard_policy,
         )
         selected_restrictions = deserialize_restrictions_payload(
             (replay_evaluation or {}).get("selected_restrictions")
@@ -237,6 +240,14 @@ def build_restrictions(
             "max_ready_rate_pct": str(coverage_max_ready_rate_pct),
             "min_dominant_block_share_pct": str(coverage_min_dominant_block_share_pct),
             "allowed_block_reasons": list(coverage_allowed_reasons),
+        },
+        "collection_guard": {
+            "policy": {
+                "min_trades": collection_guard_policy.min_trades,
+                "min_trade_share_pct": str(collection_guard_policy.min_trade_share_pct),
+                "min_signal_share_pct": str(collection_guard_policy.min_signal_share_pct),
+            },
+            "selected": (replay_evaluation or {}).get("selected_collection_guard"),
         },
         "replay_evaluation": replay_evaluation,
         "current_active": serialize_restrictions(current_active),
@@ -382,6 +393,7 @@ def evaluate_analysis_candidates(
     ticker_hour_candidates: list[dict[str, Any]],
     ticker_candidates: list[dict[str, Any]],
     hour_candidates: list[dict[str, Any]],
+    collection_guard_policy: CollectionGuardPolicy,
 ) -> dict[str, Any] | None:
     window = dict(analysis_payload.get("window") or {})
     days_requested = int(window.get("days_requested", 1) or 1)
@@ -430,6 +442,7 @@ def evaluate_analysis_candidates(
                 baseline_result=baseline_result,
                 restrictions=restrictions,
                 family="ticker_hour",
+                collection_guard_policy=collection_guard_policy,
             )
         )
 
@@ -445,6 +458,7 @@ def evaluate_analysis_candidates(
                 baseline_result=baseline_result,
                 restrictions=restrictions,
                 family="ticker",
+                collection_guard_policy=collection_guard_policy,
             )
         )
 
@@ -460,6 +474,7 @@ def evaluate_analysis_candidates(
                 baseline_result=baseline_result,
                 restrictions=restrictions,
                 family="hour",
+                collection_guard_policy=collection_guard_policy,
             )
         )
 
@@ -475,6 +490,7 @@ def evaluate_analysis_candidates(
         "selected_source": (selected or {}).get("selected_source"),
         "selected_restrictions": (selected or {}).get("selected_restrictions"),
         "selected_result": (selected or {}).get("result"),
+        "selected_collection_guard": (selected or {}).get("collection_guard"),
         "selected_delta_net_pnl_rub": (selected or {}).get("delta_net_pnl_rub"),
         "selected_delta_drawdown_rub": (selected or {}).get("delta_drawdown_rub"),
     }
@@ -487,6 +503,7 @@ def evaluate_restriction_candidate(
     baseline_result: dict[str, Any],
     restrictions: EntryRestrictions,
     family: str,
+    collection_guard_policy: CollectionGuardPolicy,
 ) -> dict[str, Any]:
     result = simulate_candidate(
         config,
@@ -499,12 +516,22 @@ def evaluate_restriction_candidate(
     result_drawdown = Decimal(str(result.get("max_drawdown_rub", "0")))
     delta_net = result_net - baseline_net
     delta_drawdown = baseline_drawdown - result_drawdown
-    eligible = delta_net > 0 or (delta_net == 0 and delta_drawdown > 0)
+    collection_guard = evaluate_collection_guard(
+        baseline_trade_count=baseline_result.get("trade_count"),
+        candidate_trade_count=result.get("trade_count"),
+        baseline_signals_detected=baseline_result.get("signals_detected"),
+        candidate_signals_detected=result.get("signals_detected"),
+        policy=collection_guard_policy,
+    )
+    eligible = collection_guard.get("passes", False) and (
+        delta_net > 0 or (delta_net == 0 and delta_drawdown > 0)
+    )
     return {
         "family": family,
         "selected_source": f"analysis_{family}_replay",
         "selected_restrictions": serialize_restrictions(restrictions),
         "result": summarize_replay_result(result),
+        "collection_guard": collection_guard,
         "delta_net_pnl_rub": str(delta_net),
         "delta_drawdown_rub": str(delta_drawdown),
         "eligible": eligible,
@@ -629,6 +656,14 @@ def write_restrictions_report(runtime_dir: Path, payload: dict[str, Any], *, app
             json.dumps(payload.get("active_restrictions", {}), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+
+
+def load_collection_guard_policy() -> CollectionGuardPolicy:
+    return CollectionGuardPolicy(
+        min_trades=max(0, int(_env_value("SCALPER_COLLECTION_GUARD_MIN_TRADES", "3") or 3)),
+        min_trade_share_pct=Decimal(_env_value("SCALPER_COLLECTION_GUARD_MIN_TRADE_SHARE_PCT", "35") or "35"),
+        min_signal_share_pct=Decimal(_env_value("SCALPER_COLLECTION_GUARD_MIN_SIGNAL_SHARE_PCT", "35") or "35"),
+    )
 
 
 def build_decision(*, apply: bool, applied: bool, reasons: list[str]) -> str:

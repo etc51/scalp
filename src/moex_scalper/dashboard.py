@@ -291,6 +291,10 @@ HTML = """<!doctype html>
 
     <div class="layout">
       <div class="panel">
+        <h2>Intraday Refresh</h2>
+        <div id="intradayWrap"></div>
+      </div>
+      <div class="panel">
         <h2>Indicator Research</h2>
         <div id="researchSummaryWrap"></div>
       </div>
@@ -543,6 +547,9 @@ HTML = """<!doctype html>
 
     const renderTuning = (tuning) => {
       if (!tuning) return '<div class="empty">Пока нет tuning-report</div>';
+      const optimizerGuard = tuning.collection_guard?.optimizer || null;
+      const regimeGuard = tuning.collection_guard?.regime || null;
+      const strategyGuard = tuning.collection_guard?.strategy_overlay || null;
       return renderTable(
         ["Metric", "Value"],
         [
@@ -574,6 +581,9 @@ HTML = """<!doctype html>
           ["Research Delta", fmtRub(tuning.research?.delta_vs_baseline_rub)],
           ["Strategy Lab Reason", tuning.research?.strategy_overlay_recommendation_reason || "—"],
           ["Strategy Lab Delta", fmtRub(tuning.research?.strategy_overlay_delta_vs_baseline_rub)],
+          ["Optimizer Guard", optimizerGuard ? `${String(optimizerGuard.passes)} | trades ${optimizerGuard.candidate_trade_count}/${optimizerGuard.baseline_trade_count} | signals ${optimizerGuard.candidate_signals_detected}/${optimizerGuard.baseline_signals_detected}` : "—"],
+          ["Regime Guard", regimeGuard ? `${String(regimeGuard.passes)} | trades ${regimeGuard.candidate_trade_count}/${regimeGuard.baseline_trade_count} | signals ${regimeGuard.candidate_signals_detected}/${regimeGuard.baseline_signals_detected}` : "—"],
+          ["Strategy Guard", strategyGuard ? `${String(strategyGuard.passes)} | trades ${strategyGuard.candidate_trade_count}/${strategyGuard.baseline_trade_count} | signals ${strategyGuard.candidate_signals_detected}/${strategyGuard.baseline_signals_detected}` : "—"],
           ["Recommended TP", tuning.headroom_guard?.recommended_take_profit_bps || "—"],
           ["Changed Keys", (tuning.changed_keys || []).join(", ") || "—"],
           ["Updated", tuning.generated_at || "—"],
@@ -591,6 +601,7 @@ HTML = """<!doctype html>
       const proposedHours = proposed.blocked_entry_hours || [];
       const proposedTickerHours = proposed.blocked_ticker_hours || [];
       const replay = restrictions?.replay_evaluation || null;
+      const guard = restrictions?.collection_guard?.selected || replay?.selected_collection_guard || null;
       if (!restrictions && !activeTickers.length && !activeHours.length && !activeTickerHours.length) {
         return '<div class="empty">Пока нет restrictions-report</div>';
       }
@@ -619,6 +630,7 @@ HTML = """<!doctype html>
           ["Replay Selected", replay?.selected_source || "—"],
           ["Replay Delta Net", fmtRub(replay?.selected_delta_net_pnl_rub)],
           ["Replay Delta DD", fmtRub(replay?.selected_delta_drawdown_rub)],
+          ["Replay Guard", guard ? `${String(guard.passes)} | trades ${guard.candidate_trade_count}/${guard.baseline_trade_count} | signals ${guard.candidate_signals_detected}/${guard.baseline_signals_detected}` : "—"],
           ["Updated", restrictions?.generated_at || active.updated_at || "—"],
         ],
       );
@@ -742,6 +754,29 @@ HTML = """<!doctype html>
           ["Strategy Lab", researchBest ? `${researchBest.name} (${fmtRub(researchBest.delta_vs_baseline_rub)} vs lab baseline)` : "—"],
           ["Strategy Lab Recommendation", researchRecommendation?.reason || "—"],
           ["Watchdog", summary.watchdog?.status || "—"],
+        ],
+      );
+    };
+
+    const renderIntraday = (intraday) => {
+      if (!intraday) return '<div class="empty">Пока нет intraday-refresh</div>';
+      const bestStrategy = intraday.best_strategy_lab_candidate || null;
+      const bestRegime = intraday.best_regime_candidate || null;
+      return renderTable(
+        ["Metric", "Value"],
+        [
+          ["Status", intraday.status || "—"],
+          ["Ran", intraday.ran === undefined ? "—" : String(intraday.ran)],
+          ["Entry Window", intraday.entry_window_state || "—"],
+          ["Analysis", intraday.analysis_status || intraday.analysis_assessment || "—"],
+          ["Research", intraday.research_status || "—"],
+          ["Headline", intraday.summary_headline || "—"],
+          ["Best Strategy", bestStrategy ? `${bestStrategy.name} (${fmtRub(bestStrategy.delta_vs_baseline_rub)})` : "—"],
+          ["Strategy Recommendation", intraday.strategy_lab_recommendation?.reason || "—"],
+          ["Best Regime", bestRegime ? `${bestRegime.name} (${fmtRub(bestRegime.delta_vs_baseline_rub)})` : "—"],
+          ["Regime Recommendation", intraday.regime_recommendation?.reason || "—"],
+          ["Next Action", intraday.next_action || "—"],
+          ["Updated", intraday.generated_at || "—"],
         ],
       );
     };
@@ -877,6 +912,7 @@ HTML = """<!doctype html>
         const analysis = state.analysis || null;
         const research = state.research || null;
         const summary = state.summary || null;
+        const intraday = state.intraday || null;
 
         document.getElementById("statusText").textContent = "online";
         document.getElementById("mode").textContent = `${state.mode || "-"} / ${state.position_sizing_mode || "-"} / ${fmtNum(state.portfolio?.max_gross_leverage, 2)}x`;
@@ -977,6 +1013,7 @@ HTML = """<!doctype html>
         document.getElementById("analysisSummaryWrap").innerHTML = renderAnalysisSummary(analysis);
         document.getElementById("analysisFocusWrap").innerHTML = renderFocus(analysis);
         document.getElementById("summaryWrap").innerHTML = renderDailySummary(summary);
+        document.getElementById("intradayWrap").innerHTML = renderIntraday(intraday);
         document.getElementById("summaryFocusWrap").innerHTML = renderSummaryFocus(summary);
         document.getElementById("researchSummaryWrap").innerHTML = renderResearchSummary(research);
         document.getElementById("researchTickerWrap").innerHTML = renderResearchTickers(research);
@@ -1060,6 +1097,7 @@ def _default_payload() -> dict[str, object]:
         "analysis": None,
         "research": None,
         "summary": None,
+        "intraday": None,
         "portfolio": {
             "initial_cash_rub": None,
             "cash_rub": None,
@@ -1092,6 +1130,7 @@ def serve_dashboard(*, host: str, port: int, runtime_dir: Path) -> None:
     analysis_path = runtime_dir / "analysis" / "latest.json"
     research_path = runtime_dir / "research" / "latest.json"
     summary_path = runtime_dir / "summary" / "latest.json"
+    intraday_path = runtime_dir / "intraday" / "latest.json"
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
@@ -1157,6 +1196,11 @@ def serve_dashboard(*, host: str, port: int, runtime_dir: Path) -> None:
                         payload["summary"] = json.loads(summary_path.read_text(encoding="utf-8"))
                     except json.JSONDecodeError:
                         payload["summary"] = None
+                if intraday_path.exists():
+                    try:
+                        payload["intraday"] = json.loads(intraday_path.read_text(encoding="utf-8"))
+                    except json.JSONDecodeError:
+                        payload["intraday"] = None
                 body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "application/json; charset=utf-8")

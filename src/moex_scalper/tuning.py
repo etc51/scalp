@@ -6,6 +6,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from .collection_guard import CollectionGuardPolicy, evaluate_collection_guard
 from .config import ScalperConfig, parse_bool
 from .diagnostics import build_strategy_diagnostics, get_recommended_take_profit_bps
 
@@ -86,9 +87,12 @@ def tune_parameters(
     research_recommendation = dict((((research_payload or {}).get("regime_replay") or {}).get("recommendation") or {}))
     research_candidate = dict(research_recommendation.get("candidate") or {})
     research_candidate_allow_short = research_candidate.get("allow_short")
+    regime_baseline = dict((((research_payload or {}).get("regime_replay") or {}).get("baseline")) or {})
     strategy_lab_recommendation = dict((((research_payload or {}).get("strategy_lab") or {}).get("recommendation") or {}))
     strategy_lab_candidate = dict(strategy_lab_recommendation.get("candidate") or {})
     strategy_lab_candidate_allow_short = strategy_lab_candidate.get("allow_short")
+    strategy_lab_baseline = dict((((research_payload or {}).get("strategy_lab") or {}).get("baseline")) or {})
+    collection_guard_policy = load_collection_guard_policy()
 
     enabled = parse_bool(_env_value("SCALPER_AUTO_TUNE_ENABLED"), default=True)
     regime_apply_enabled = parse_bool(_env_value("SCALPER_AUTO_APPLY_REGIME_FILTER", "1"), default=True)
@@ -174,6 +178,18 @@ def tune_parameters(
         optimizer_reasons.append("candidate_already_applied")
     if delta_vs_baseline_rub < min_delta_rub:
         optimizer_reasons.append("delta_below_threshold")
+    optimizer_collection_guard = None
+    if not optimizer_reasons and optimizer_candidate_parameters:
+        optimizer_baseline = dict((optimizer_payload or {}).get("baseline") or {})
+        optimizer_collection_guard = evaluate_collection_guard(
+            baseline_trade_count=optimizer_baseline.get("trade_count"),
+            candidate_trade_count=candidate.get("trade_count"),
+            baseline_signals_detected=optimizer_baseline.get("signals_detected"),
+            candidate_signals_detected=candidate.get("signals_detected"),
+            policy=collection_guard_policy,
+        )
+        if not optimizer_collection_guard.get("passes", False):
+            optimizer_reasons.append("optimizer_collection_guard_blocked")
 
     selected_candidate_parameters: dict[str, str] | None = None
     candidate_source: str | None = None
@@ -192,6 +208,7 @@ def tune_parameters(
     selected_regime_source: str | None = None
     selected_strategy_overlay_mode: str | None = None
     selected_allow_short: bool | None = None
+    regime_collection_guard = None
     if not regime_apply_enabled:
         regime_reasons.append("regime_autotune_disabled")
     if research_payload is None:
@@ -212,21 +229,32 @@ def tune_parameters(
         elif regime_delta_vs_baseline_rub < min_regime_delta_rub:
             regime_reasons.append("regime_delta_below_threshold")
         else:
-            mode_would_change = regime_candidate_mode != config.regime_filter_mode
-            allow_short_would_change = (
-                regime_candidate_allow_short is not None
-                and regime_candidate_allow_short != config.allow_short
+            regime_collection_guard = evaluate_collection_guard(
+                baseline_trade_count=regime_baseline.get("trade_count"),
+                candidate_trade_count=research_candidate.get("trade_count"),
+                baseline_signals_detected=regime_baseline.get("signals_detected"),
+                candidate_signals_detected=research_candidate.get("signals_detected"),
+                policy=collection_guard_policy,
             )
-            if not mode_would_change and not allow_short_would_change:
-                regime_reasons.append("research_candidate_already_applied")
+            if not regime_collection_guard.get("passes", False):
+                regime_reasons.append("regime_collection_guard_blocked")
             else:
-                if mode_would_change:
-                    selected_regime_filter_mode = regime_candidate_mode
-                    selected_regime_source = "research_regime"
-                if allow_short_would_change:
-                    selected_allow_short = regime_candidate_allow_short
+                mode_would_change = regime_candidate_mode != config.regime_filter_mode
+                allow_short_would_change = (
+                    regime_candidate_allow_short is not None
+                    and regime_candidate_allow_short != config.allow_short
+                )
+                if not mode_would_change and not allow_short_would_change:
+                    regime_reasons.append("research_candidate_already_applied")
+                else:
+                    if mode_would_change:
+                        selected_regime_filter_mode = regime_candidate_mode
+                        selected_regime_source = "research_regime"
+                    if allow_short_would_change:
+                        selected_allow_short = regime_candidate_allow_short
 
     strategy_overlay_reasons: list[str] = []
+    strategy_overlay_collection_guard = None
     overlay_candidate_mode = str(
         strategy_lab_candidate.get("strategy_overlay_mode")
         or strategy_lab_candidate.get("overlay_mode")
@@ -256,23 +284,33 @@ def tune_parameters(
         elif strategy_overlay_delta_vs_baseline_rub < min_strategy_overlay_delta_rub:
             strategy_overlay_reasons.append("strategy_overlay_delta_below_threshold")
         else:
-            overlay_would_change = overlay_candidate_mode != config.strategy_overlay_mode
-            allow_short_would_change = (
-                overlay_candidate_allow_short is not None
-                and overlay_candidate_allow_short != config.allow_short
+            strategy_overlay_collection_guard = evaluate_collection_guard(
+                baseline_trade_count=strategy_lab_baseline.get("trade_count"),
+                candidate_trade_count=strategy_lab_candidate.get("trade_count"),
+                baseline_signals_detected=strategy_lab_baseline.get("signals_detected"),
+                candidate_signals_detected=strategy_lab_candidate.get("signals_detected"),
+                policy=collection_guard_policy,
             )
-            regime_reset_would_change = config.regime_filter_mode != "off"
-            if not overlay_would_change and not allow_short_would_change and not regime_reset_would_change:
-                strategy_overlay_reasons.append("strategy_overlay_candidate_already_applied")
+            if not strategy_overlay_collection_guard.get("passes", False):
+                strategy_overlay_reasons.append("strategy_overlay_collection_guard_blocked")
             else:
-                if overlay_would_change:
-                    selected_strategy_overlay_mode = overlay_candidate_mode
-                if allow_short_would_change:
-                    selected_allow_short = overlay_candidate_allow_short
-                if regime_reset_would_change:
-                    selected_regime_filter_mode = "off"
-                    selected_regime_source = "research_strategy_overlay"
-                regime_reasons.append("strategy_overlay_preferred")
+                overlay_would_change = overlay_candidate_mode != config.strategy_overlay_mode
+                allow_short_would_change = (
+                    overlay_candidate_allow_short is not None
+                    and overlay_candidate_allow_short != config.allow_short
+                )
+                regime_reset_would_change = config.regime_filter_mode != "off"
+                if not overlay_would_change and not allow_short_would_change and not regime_reset_would_change:
+                    strategy_overlay_reasons.append("strategy_overlay_candidate_already_applied")
+                else:
+                    if overlay_would_change:
+                        selected_strategy_overlay_mode = overlay_candidate_mode
+                    if allow_short_would_change:
+                        selected_allow_short = overlay_candidate_allow_short
+                    if regime_reset_would_change:
+                        selected_regime_filter_mode = "off"
+                        selected_regime_source = "research_strategy_overlay"
+                    regime_reasons.append("strategy_overlay_preferred")
 
     env_updates: dict[str, str] = {}
     candidate_sources: list[str] = []
@@ -352,6 +390,16 @@ def tune_parameters(
             "recommended_take_profit_bps": str(get_recommended_take_profit_bps(config)),
             "candidate_signature": headroom_candidate_signature,
             "candidate_parameters": headroom_candidate_parameters,
+        },
+        "collection_guard": {
+            "policy": {
+                "min_trades": collection_guard_policy.min_trades,
+                "min_trade_share_pct": str(collection_guard_policy.min_trade_share_pct),
+                "min_signal_share_pct": str(collection_guard_policy.min_signal_share_pct),
+            },
+            "optimizer": optimizer_collection_guard,
+            "regime": regime_collection_guard,
+            "strategy_overlay": strategy_overlay_collection_guard,
         },
         "coverage_fallback": {
             **coverage_fallback,
@@ -601,6 +649,14 @@ def build_coverage_unblocker_candidate(
     details["eligible"] = True
     details["reason"] = "coverage_unblocker_candidate"
     return candidate, details
+
+
+def load_collection_guard_policy() -> CollectionGuardPolicy:
+    return CollectionGuardPolicy(
+        min_trades=max(0, int(_env_value("SCALPER_COLLECTION_GUARD_MIN_TRADES", "3") or 3)),
+        min_trade_share_pct=Decimal(_env_value("SCALPER_COLLECTION_GUARD_MIN_TRADE_SHARE_PCT", "35") or "35"),
+        min_signal_share_pct=Decimal(_env_value("SCALPER_COLLECTION_GUARD_MIN_SIGNAL_SHARE_PCT", "35") or "35"),
+    )
 
 
 def build_unblocker_step_candidate(

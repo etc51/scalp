@@ -40,6 +40,9 @@ TRACKED_STRATEGY_PROFILE_KEYS = frozenset(
         "SCALPER_PAPER_TICKER_GUARD_COOLDOWN_SECONDS",
         "SCALPER_PAPER_CONTINUE_AFTER_DAILY_LOSS_LIMIT",
         "SCALPER_INTRADAY_SESSION_MAX_GUARDED_TICKERS",
+        "SCALPER_COLLECTION_GUARD_MIN_TRADES",
+        "SCALPER_COLLECTION_GUARD_MIN_TRADE_SHARE_PCT",
+        "SCALPER_COLLECTION_GUARD_MIN_SIGNAL_SHARE_PCT",
         "SCALPER_MAX_OPEN_POSITIONS",
         "SCALPER_MAX_POSITION_NOTIONAL_RUB",
         "SCALPER_POSITION_SIZING_MODE",
@@ -252,7 +255,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="moex_scalper",
         description="Moderate scalper for high-liquidity MOEX stocks via T-Bank Invest API.",
     )
-    parser.add_argument("command", choices=("doctor", "run", "dashboard", "optimize", "analyze", "research", "summarize", "tune", "watchdog", "restrict", "govern"))
+    parser.add_argument("command", choices=("doctor", "run", "dashboard", "optimize", "analyze", "research", "summarize", "intraday", "tune", "watchdog", "restrict", "govern"))
     parser.add_argument("--mode", choices=("paper", "live"), default=os.getenv("SCALPER_MODE", "paper"))
     parser.add_argument("--watchlist", default=os.getenv("SCALPER_WATCHLIST", "SBER,GAZP,LKOH,VTBR"))
     parser.add_argument("--run-seconds", type=float, default=float(os.getenv("SCALPER_RUN_DURATION_SECONDS", "0")))

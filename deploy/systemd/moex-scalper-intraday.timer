@@ -1,0 +1,10 @@
+[Unit]
+Description=Intraday analysis and research refresh for MOEX scalper
+
+[Timer]
+OnBootSec=7min
+OnUnitActiveSec=15min
+Unit=moex-scalper-intraday.service
+
+[Install]
+WantedBy=timers.target
