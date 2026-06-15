@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -43,7 +43,7 @@ def build_daily_summary(
 
     payload = {
         "status": "ok",
-        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "mode": (state or {}).get("mode", config.mode),
         "updated_at": (state or {}).get("updated_at"),
         "watchlist": list((state or {}).get("watchlist") or []),
@@ -93,6 +93,7 @@ def build_daily_summary(
             "trade_count": (((analysis or {}).get("summary") or {}).get("trade_count", (analysis or {}).get("trade_count"))),
             "net_pnl_rub": (((analysis or {}).get("summary") or {}).get("net_pnl_rub", (analysis or {}).get("net_pnl_rub"))),
             "focus": list((analysis or {}).get("focus") or []),
+            "entry_forensics_summary": ((((analysis or {}).get("entry_forensics")) or {}).get("summary")) or {},
         },
         "optimizer": {
             "status": (optimizer or {}).get("status"),
@@ -158,6 +159,7 @@ def build_focus(payload: dict[str, Any]) -> list[str]:
     focus: list[str] = []
     today = payload.get("today") or {}
     analysis = payload.get("analysis") or {}
+    entry_forensics_summary = analysis.get("entry_forensics_summary") or {}
     optimizer = payload.get("optimizer") or {}
     research = payload.get("research") or {}
     doctor = payload.get("doctor") or {}
@@ -267,6 +269,16 @@ def build_focus(payload: dict[str, Any]) -> list[str]:
         )
     if analysis.get("assessment") == "insufficient_sample":
         focus.append("Trade sample пока недостаточен для устойчивых выводов.")
+    if int(entry_forensics_summary.get("trade_count", 0) or 0) >= 5:
+        worst_entry_tier = entry_forensics_summary.get("worst_entry_tier")
+        best_entry_tier = entry_forensics_summary.get("best_entry_tier")
+        worst_edge_bucket = entry_forensics_summary.get("worst_edge_bucket")
+        if worst_entry_tier:
+            focus.append(
+                "Friction-aware entry tiers: "
+                f"weakest={worst_entry_tier}, strongest={best_entry_tier or 'n/a'}, "
+                f"worst post-cost bucket={worst_edge_bucket or 'n/a'}."
+            )
 
     coverage = optimizer.get("signal_coverage") or {}
     if coverage:

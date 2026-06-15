@@ -321,6 +321,17 @@ HTML = """<!doctype html>
         <div id="analysisHourWrap"></div>
       </div>
     </div>
+
+    <div class="layout">
+      <div class="panel">
+        <h2>Entry Tier Breakdown</h2>
+        <div id="analysisEntryTierWrap"></div>
+      </div>
+      <div class="panel">
+        <h2>Post-Cost Edge Breakdown</h2>
+        <div id="analysisEdgeBucketWrap"></div>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -699,6 +710,10 @@ HTML = """<!doctype html>
           ["Entry Context", fmtNum(forensicsSummary.context_coverage_pct || 0, 2) + " %"],
           ["Worst Entry Tag", forensicsSummary.worst_primary_tag || "—"],
           ["Best Entry Tag", forensicsSummary.best_primary_tag || "—"],
+          ["Worst Entry Tier", forensicsSummary.worst_entry_tier || "—"],
+          ["Best Entry Tier", forensicsSummary.best_entry_tier || "—"],
+          ["Worst Post-Cost Bucket", forensicsSummary.worst_edge_bucket || "—"],
+          ["Best Post-Cost Bucket", forensicsSummary.best_edge_bucket || "—"],
         ],
       );
     };
@@ -951,10 +966,11 @@ HTML = """<!doctype html>
           `watchlist: ${(state.watchlist || []).join(", ")} | schedule: ${state.entry_schedule?.start || "—"}-${state.entry_schedule?.end || "—"} ${state.entry_schedule?.timezone || ""} | updated: ${state.updated_at || "—"} | processed: ${state.snapshots_processed || 0} | in-window today: ${marketHistory.recorded_snapshots_today || 0} | recorded total: ${marketHistory.recorded_snapshots_total || 0} | raw signals: ${state.signal_candidates_detected || 0} | opened: ${state.signals_detected || 0}`;
 
         document.getElementById("positionsWrap").innerHTML = renderTable(
-          ["Ticker", "Side", "Qty", "Entry", "Mark", "Entry Fee", "Opened"],
+          ["Ticker", "Side", "Tier", "Qty", "Entry", "Mark", "Entry Fee", "Opened"],
           (state.positions || []).map((item) => [
             item.ticker,
             item.side || "—",
+            item.entry_tier || "—",
             fmtNum(item.quantity_lots, 0),
             fmtNum(item.entry_price, 4),
             fmtNum(item.current_mark, 4),
@@ -964,10 +980,11 @@ HTML = """<!doctype html>
         );
 
         document.getElementById("tradesWrap").innerHTML = renderTable(
-          ["Ticker", "Side", "Qty", "Entry", "Exit", "Fees", "Net PnL", "Exit Reason"],
+          ["Ticker", "Side", "Tier", "Qty", "Entry", "Exit", "Fees", "Net PnL", "Exit Reason"],
           (state.trades_today || []).slice().reverse().map((item) => [
             item.ticker,
             item.side || "—",
+            item.entry_tier || "—",
             fmtNum(item.quantity_lots, 0),
             fmtNum(item.entry_price, 4),
             fmtNum(item.exit_price, 4),
@@ -1035,6 +1052,14 @@ HTML = """<!doctype html>
         document.getElementById("researchTickerWrap").innerHTML = renderResearchTickers(research);
         document.getElementById("analysisTickerWrap").innerHTML = renderBreakdown(analysis?.by_ticker, "Ticker");
         document.getElementById("analysisHourWrap").innerHTML = renderBreakdown(analysis?.by_hour, "Hour");
+        document.getElementById("analysisEntryTierWrap").innerHTML = renderBreakdown(
+          analysis?.entry_forensics?.by_entry_tier,
+          "Entry Tier",
+        );
+        document.getElementById("analysisEdgeBucketWrap").innerHTML = renderBreakdown(
+          analysis?.entry_forensics?.by_expected_edge_after_costs_bucket,
+          "Edge Bucket",
+        );
       } catch (error) {
         document.getElementById("statusText").textContent = "waiting for state";
       }

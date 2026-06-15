@@ -643,6 +643,10 @@ class ScalperRuntime:
                     "entry_fee_rub": str(position.entry_fee_rub),
                     "entry_reason": position.reason,
                     "entry_profile": position.metadata.get("entry_profile"),
+                    "entry_tier": position.metadata.get("entry_tier"),
+                    "entry_expected_edge_after_costs_bps": position.metadata.get(
+                        "entry_expected_edge_after_costs_bps"
+                    ),
                 }
                 for position in sorted(self.state.positions.values(), key=lambda item: item.instrument.ticker)
             ],
@@ -660,6 +664,12 @@ class ScalperRuntime:
                     "net_pnl_rub": str(trade.net_pnl_rub),
                     "entry_reason": trade.entry_reason,
                     "entry_profile": _extract_entry_profile(trade.entry_reason),
+                    "entry_tier": _extract_entry_metric(trade.entry_reason, "edge_tier")
+                    or _extract_entry_profile(trade.entry_reason),
+                    "entry_expected_edge_after_costs_bps": _extract_entry_metric(
+                        trade.entry_reason,
+                        "expected_edge_after_costs_bps",
+                    ),
                     "exit_reason": trade.exit_reason,
                 }
                 for trade in self.state.trades_today[-100:]
@@ -997,7 +1007,11 @@ class ScalperRuntime:
 
 
 def _extract_entry_profile(reason: str) -> str | None:
+    return _extract_entry_metric(reason, "profile")
+
+
+def _extract_entry_metric(reason: str, key: str) -> str | None:
     for chunk in str(reason).split():
-        if chunk.startswith("profile="):
+        if chunk.startswith(f"{key}="):
             return chunk.split("=", 1)[1]
     return None

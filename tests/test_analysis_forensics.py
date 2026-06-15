@@ -88,7 +88,7 @@ class AnalysisForensicsTests(unittest.TestCase):
                     "gross_pnl_rub": "-5",
                     "fees_rub": "45",
                     "net_pnl_rub": "-50",
-                    "entry_reason": "profile=adaptive side=buy impulse_bps=2.00 spread_bps=1.80 imbalance=0.53 net_tp_bps=5.00 net_tp_after_costs_bps=1.20",
+                    "entry_reason": "profile=adaptive side=buy impulse_bps=2.00 spread_bps=1.80 imbalance=0.53 net_tp_bps=5.00 net_tp_after_costs_bps=2.20 expected_edge_after_costs_bps=2.10 edge_tier=workable",
                     "exit_reason": "time_stop",
                     "hold_seconds": 6,
                 },
@@ -101,10 +101,10 @@ class AnalysisForensicsTests(unittest.TestCase):
                     "exit_price": "101.08",
                     "opened_at": "2026-06-15T17:10:00+00:00",
                     "closed_at": "2026-06-15T17:10:08+00:00",
-                    "gross_pnl_rub": "-8",
+                    "gross_pnl_rub": "87",
                     "fees_rub": "62",
-                    "net_pnl_rub": "-70",
-                    "entry_reason": "profile=adaptive side=sell impulse_bps=-2.20 spread_bps=1.90 imbalance=0.46 net_tp_bps=5.00 net_tp_after_costs_bps=1.10",
+                    "net_pnl_rub": "25",
+                    "entry_reason": "profile=adaptive side=sell impulse_bps=-2.20 spread_bps=1.90 imbalance=0.46 net_tp_bps=7.00 net_tp_after_costs_bps=4.60 expected_edge_after_costs_bps=4.20 edge_tier=strong",
                     "exit_reason": "time_stop",
                     "hold_seconds": 8,
                 },
@@ -237,10 +237,31 @@ class AnalysisForensicsTests(unittest.TestCase):
 
             self.assertEqual(payload["status"], "ok")
             self.assertEqual(payload["entry_forensics"]["summary"]["trade_count"], 3)
-            self.assertEqual(payload["entry_forensics"]["summary"]["worst_primary_tag"], "fee_churn")
+            self.assertEqual(payload["entry_forensics"]["summary"]["worst_entry_tier"], "workable")
+            self.assertEqual(payload["entry_forensics"]["summary"]["best_entry_tier"], "strong")
+            self.assertEqual(
+                payload["entry_forensics"]["summary"]["best_edge_bucket"],
+                "strong_4_plus",
+            )
             self.assertGreaterEqual(
                 payload["entry_forensics"]["summary"]["tag_presence"]["fee_churn"],
-                2,
+                1,
+            )
+            self.assertEqual(
+                payload["entry_forensics"]["summary"]["entry_tier_presence"]["workable"],
+                1,
+            )
+            self.assertEqual(
+                payload["entry_forensics"]["summary"]["entry_tier_presence"]["strong"],
+                1,
+            )
+            self.assertEqual(
+                payload["entry_forensics"]["by_entry_tier"]["worst"][0]["key"],
+                "workable",
+            )
+            self.assertEqual(
+                payload["entry_forensics"]["by_expected_edge_after_costs_bucket"]["best"][0]["key"],
+                "strong_4_plus",
             )
             self.assertEqual(payload["shadow_followup"]["status"], "partial_missing_followups")
             self.assertEqual(payload["shadow_followup"]["summary"]["missing_followup_count"], 1)

@@ -5,7 +5,7 @@ import re
 from bisect import bisect_left
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable
@@ -102,6 +102,7 @@ class ShadowMissingRecord:
 class EntryForensicsObservation:
     trade: TradeRecord
     entry_profile: str
+    entry_tier: str
     primary_tag: str
     tags: tuple[str, ...]
     context_available: bool
@@ -111,6 +112,7 @@ class EntryForensicsObservation:
     imbalance: Decimal | None
     net_tp_bps: Decimal | None
     net_tp_after_costs_bps: Decimal | None
+    expected_edge_after_costs_bps: Decimal | None
     atr14_bps: Decimal | None
     session_twap_gap_bps: Decimal | None
 
@@ -179,7 +181,7 @@ def analyze_trades(
     if not filtered:
         payload = {
             "status": "no_entry_window_data",
-            "generated_at": datetime.utcnow().isoformat() + "Z",
+            "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "trade_file": str(trades_path),
             "raw_trade_count": len(selected),
             "trade_count": 0,
@@ -235,7 +237,7 @@ def analyze_trades(
 
     payload = {
         "status": "ok",
-        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "trade_file": str(trades_path),
         "raw_trade_count": len(selected),
         "trade_count": len(filtered),
@@ -591,16 +593,26 @@ def build_entry_forensics_section(
                 "context_available_count": 0,
                 "context_coverage_pct": 0.0,
                 "tag_presence": {},
+                "entry_tier_presence": {},
+                "edge_bucket_presence": {},
                 "worst_primary_tag": None,
                 "best_primary_tag": None,
+                "worst_entry_tier": None,
+                "best_entry_tier": None,
+                "worst_edge_bucket": None,
+                "best_edge_bucket": None,
             },
             "by_primary_tag": build_ranked_section([], top_n=top_n),
             "by_entry_profile": build_ranked_section([], top_n=top_n),
+            "by_entry_tier": build_ranked_section([], top_n=top_n),
+            "by_expected_edge_after_costs_bucket": build_ranked_section([], top_n=top_n),
             "by_trend_label": build_ranked_section([], top_n=top_n),
         }
 
     context_map = build_indicator_context_map(config, records=records)
     tag_presence: Counter[str] = Counter()
+    entry_tier_presence: Counter[str] = Counter()
+    edge_bucket_presence: Counter[str] = Counter()
     observations: list[EntryForensicsObservation] = []
     context_available_count = 0
 
@@ -621,11 +633,24 @@ def build_entry_forensics_section(
             indicator_state=indicator_state,
         )
         tag_presence.update(tags)
+        entry_profile = str(entry_metrics.get("profile") or "unknown")
+        entry_tier = str(entry_metrics.get("edge_tier") or entry_profile or "unknown")
+        expected_edge_after_costs_bps = _decimal_or_none(
+            entry_metrics.get("expected_edge_after_costs_bps")
+        )
+        edge_bucket = classify_expected_edge_after_costs_bucket(
+            entry_profile=entry_profile,
+            entry_tier=entry_tier,
+            expected_edge_after_costs_bps=expected_edge_after_costs_bps,
+        )
+        entry_tier_presence.update((entry_tier,))
+        edge_bucket_presence.update((edge_bucket,))
         primary_tag = select_primary_entry_tag(tags)
         observations.append(
             EntryForensicsObservation(
                 trade=record,
-                entry_profile=str(entry_metrics.get("profile") or "unknown"),
+                entry_profile=entry_profile,
+                entry_tier=entry_tier,
                 primary_tag=primary_tag,
                 tags=tags,
                 context_available=context_available,
@@ -635,6 +660,7 @@ def build_entry_forensics_section(
                 imbalance=_decimal_or_none(entry_metrics.get("imbalance")),
                 net_tp_bps=_decimal_or_none(entry_metrics.get("net_tp_bps")),
                 net_tp_after_costs_bps=_decimal_or_none(entry_metrics.get("net_tp_after_costs_bps")),
+                expected_edge_after_costs_bps=expected_edge_after_costs_bps,
                 atr14_bps=_decimal_or_none(indicator_state.get("atr14_bps")),
                 session_twap_gap_bps=_decimal_or_none(indicator_state.get("session_twap_gap_bps")),
             )
@@ -647,6 +673,18 @@ def build_entry_forensics_section(
     entry_profile_stats = build_entry_forensics_breakdown(
         observations,
         key_fn=lambda item: item.entry_profile,
+    )
+    entry_tier_stats = build_entry_forensics_breakdown(
+        observations,
+        key_fn=lambda item: item.entry_tier,
+    )
+    edge_bucket_stats = build_entry_forensics_breakdown(
+        observations,
+        key_fn=lambda item: classify_expected_edge_after_costs_bucket(
+            entry_profile=item.entry_profile,
+            entry_tier=item.entry_tier,
+            expected_edge_after_costs_bps=item.expected_edge_after_costs_bps,
+        ),
     )
     trend_label_stats = build_entry_forensics_breakdown(
         observations,
@@ -672,6 +710,10 @@ def build_entry_forensics_section(
         ),
         None,
     )
+    worst_entry_tier = _select_negative_breakdown_key(entry_tier_stats)
+    best_entry_tier = _select_positive_breakdown_key(entry_tier_stats)
+    worst_edge_bucket = _select_negative_breakdown_key(edge_bucket_stats)
+    best_edge_bucket = _select_positive_breakdown_key(edge_bucket_stats)
     trade_count = len(observations)
     return {
         "status": "ok" if context_available_count == trade_count else "partial_context",
@@ -682,11 +724,19 @@ def build_entry_forensics_section(
             if trade_count
             else 0.0,
             "tag_presence": dict(tag_presence),
+            "entry_tier_presence": dict(entry_tier_presence),
+            "edge_bucket_presence": dict(edge_bucket_presence),
             "worst_primary_tag": worst_primary["key"] if worst_primary is not None else None,
             "best_primary_tag": best_primary["key"] if best_primary is not None else None,
+            "worst_entry_tier": worst_entry_tier,
+            "best_entry_tier": best_entry_tier,
+            "worst_edge_bucket": worst_edge_bucket,
+            "best_edge_bucket": best_edge_bucket,
         },
         "by_primary_tag": build_ranked_section(primary_tag_stats, top_n=top_n),
         "by_entry_profile": build_ranked_section(entry_profile_stats, top_n=top_n),
+        "by_entry_tier": build_ranked_section(entry_tier_stats, top_n=top_n),
+        "by_expected_edge_after_costs_bucket": build_ranked_section(edge_bucket_stats, top_n=top_n),
         "by_trend_label": build_ranked_section(trend_label_stats, top_n=top_n),
         "largest_losses": [
             serialize_entry_forensics_observation(item)
@@ -723,12 +773,52 @@ def build_entry_forensics_breakdown(
         summary["avg_net_tp_after_costs_bps"] = _average_decimal(
             [item.net_tp_after_costs_bps for item in items]
         )
+        summary["avg_expected_edge_after_costs_bps"] = _average_decimal(
+            [item.expected_edge_after_costs_bps for item in items]
+        )
         summary["avg_atr14_bps"] = _average_decimal([item.atr14_bps for item in items])
         summary["avg_session_twap_gap_bps"] = _average_decimal(
             [item.session_twap_gap_bps for item in items]
         )
         breakdown.append(summary)
     return breakdown
+
+
+def classify_expected_edge_after_costs_bucket(
+    *,
+    entry_profile: str,
+    entry_tier: str,
+    expected_edge_after_costs_bps: Decimal | None,
+) -> str:
+    if expected_edge_after_costs_bps is None:
+        if entry_tier == "strict" or entry_profile == "strict":
+            return "strict_or_missing"
+        return "missing"
+    if expected_edge_after_costs_bps < Decimal("0"):
+        return "negative_after_costs"
+    if expected_edge_after_costs_bps < Decimal("2"):
+        return "weak_lt_2"
+    if expected_edge_after_costs_bps < Decimal("4"):
+        return "workable_2_to_4"
+    return "strong_4_plus"
+
+
+def _select_negative_breakdown_key(items: list[dict[str, Any]]) -> str | None:
+    for item in sorted(items, key=lambda row: Decimal(str(row["net_pnl_rub"]))):
+        if _decimal(item["net_pnl_rub"]) < 0:
+            return str(item["key"])
+    return None
+
+
+def _select_positive_breakdown_key(items: list[dict[str, Any]]) -> str | None:
+    for item in sorted(
+        items,
+        key=lambda row: Decimal(str(row["net_pnl_rub"])),
+        reverse=True,
+    ):
+        if _decimal(item["net_pnl_rub"]) > 0:
+            return str(item["key"])
+    return None
 
 
 def build_indicator_context_map(
@@ -928,6 +1018,7 @@ def serialize_entry_forensics_observation(item: EntryForensicsObservation) -> di
     return {
         **serialize_trade_record(item.trade),
         "entry_profile": item.entry_profile,
+        "entry_tier": item.entry_tier,
         "primary_tag": item.primary_tag,
         "tags": list(item.tags),
         "context_available": item.context_available,
@@ -938,6 +1029,11 @@ def serialize_entry_forensics_observation(item: EntryForensicsObservation) -> di
         "net_tp_bps": str(item.net_tp_bps) if item.net_tp_bps is not None else None,
         "net_tp_after_costs_bps": (
             str(item.net_tp_after_costs_bps) if item.net_tp_after_costs_bps is not None else None
+        ),
+        "expected_edge_after_costs_bps": (
+            str(item.expected_edge_after_costs_bps)
+            if item.expected_edge_after_costs_bps is not None
+            else None
         ),
         "atr14_bps": str(item.atr14_bps) if item.atr14_bps is not None else None,
         "session_twap_gap_bps": (
