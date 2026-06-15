@@ -20,9 +20,13 @@ ALLOWED_STRATEGY_OVERLAY_MODES = frozenset(
     {
         "off",
         "trend_pullback_long",
+        "trend_pullback_short",
         "stoch_trend_long",
         "opening_range_breakout_long",
+        "opening_range_breakdown_short",
         "mean_reversion_long_short",
+        "session_twap_reclaim_long",
+        "session_twap_reject_short",
     }
 )
 
@@ -46,6 +50,9 @@ def compute_overlay_indicator_state(bars: Sequence[MinuteBar]) -> dict[str, Any]
             "stoch_k": None,
             "stoch_d": None,
             "session_return_bps": None,
+            "session_twap": None,
+            "session_twap_gap_bps": None,
+            "atr14_bps": None,
             "opening_range_high": None,
             "opening_range_low": None,
             "opening_range_breakout_bps": None,
@@ -58,6 +65,11 @@ def compute_overlay_indicator_state(bars: Sequence[MinuteBar]) -> dict[str, Any]
     stoch_k, stoch_d = _compute_stochastic(bars)
     current_session = [bar for bar in bars if bar.at.date() == bars[-1].at.date()]
     session_return_bps = _compute_session_return_bps(current_session, last_close)
+    session_twap = _compute_session_twap(current_session)
+    session_twap_gap_bps = None
+    if session_twap not in {None, ZERO}:
+        session_twap_gap_bps = ((last_close / session_twap) - ONE) * TEN_THOUSAND
+    atr14_bps = _compute_atr_bps(bars)
     opening_range_high, opening_range_low, opening_range_ready = _compute_opening_range(current_session)
     opening_range_breakout_bps = None
     opening_range_breakdown_bps = None
@@ -72,6 +84,9 @@ def compute_overlay_indicator_state(bars: Sequence[MinuteBar]) -> dict[str, Any]
         "stoch_k": stoch_k,
         "stoch_d": stoch_d,
         "session_return_bps": session_return_bps,
+        "session_twap": session_twap,
+        "session_twap_gap_bps": session_twap_gap_bps,
+        "atr14_bps": atr14_bps,
         "opening_range_high": opening_range_high,
         "opening_range_low": opening_range_low,
         "opening_range_breakout_bps": opening_range_breakout_bps,
@@ -100,6 +115,8 @@ def evaluate_strategy_overlay(
     bb_pos = _coerce_decimal(indicator_state.get("bb_pos"))
     stoch_k = _coerce_decimal(indicator_state.get("stoch_k"))
     session_return_bps = _coerce_decimal(indicator_state.get("session_return_bps"))
+    session_twap_gap_bps = _coerce_decimal(indicator_state.get("session_twap_gap_bps"))
+    atr14_bps = _coerce_decimal(indicator_state.get("atr14_bps"))
     opening_range_breakout_bps = _coerce_decimal(indicator_state.get("opening_range_breakout_bps"))
     opening_range_breakdown_bps = _coerce_decimal(indicator_state.get("opening_range_breakdown_bps"))
     opening_range_ready = bool(indicator_state.get("opening_range_ready"))
@@ -115,6 +132,10 @@ def evaluate_strategy_overlay(
             "strategy_overlay_session_return_bps": (
                 session_return_bps if session_return_bps is not None else "none"
             ),
+            "strategy_overlay_session_twap_gap_bps": (
+                session_twap_gap_bps if session_twap_gap_bps is not None else "none"
+            ),
+            "strategy_overlay_atr14_bps": atr14_bps if atr14_bps is not None else "none",
             "strategy_overlay_opening_range_ready": str(opening_range_ready).lower(),
         }
     )
@@ -132,6 +153,21 @@ def evaluate_strategy_overlay(
             return False, "strategy_overlay_rsi_not_pullback_band", metrics
         if not _between(bb_pos, Decimal("0.25"), Decimal("0.80")):
             return False, "strategy_overlay_bb_not_pullback_band", metrics
+        return True, "ok", metrics
+
+    if overlay_mode == "trend_pullback_short":
+        if signal_side is not Side.SELL:
+            return False, "strategy_overlay_short_only", metrics
+        if trend_label != "bearish":
+            return False, "strategy_overlay_trend_not_bearish", metrics
+        if ema_gap_bps is None or ema_gap_bps >= Decimal("-0.5"):
+            return False, "strategy_overlay_ema_gap_not_negative_enough", metrics
+        if macd_hist is None or macd_hist >= ZERO:
+            return False, "strategy_overlay_macd_not_negative", metrics
+        if not _between(rsi14, Decimal("35"), Decimal("60")):
+            return False, "strategy_overlay_rsi_not_short_pullback_band", metrics
+        if not _between(bb_pos, Decimal("0.35"), Decimal("0.90")):
+            return False, "strategy_overlay_bb_not_short_pullback_band", metrics
         return True, "ok", metrics
 
     if overlay_mode == "stoch_trend_long":
@@ -162,6 +198,23 @@ def evaluate_strategy_overlay(
             return False, "strategy_overlay_session_not_positive", metrics
         return True, "ok", metrics
 
+    if overlay_mode == "opening_range_breakdown_short":
+        if signal_side is not Side.SELL:
+            return False, "strategy_overlay_short_only", metrics
+        if not opening_range_ready:
+            return False, "strategy_overlay_opening_range_warmup", metrics
+        if opening_range_breakdown_bps is None or opening_range_breakdown_bps >= -ONE:
+            return False, "strategy_overlay_no_breakdown", metrics
+        if ema_gap_bps is None or ema_gap_bps >= ZERO:
+            return False, "strategy_overlay_ema_gap_not_negative", metrics
+        if macd_hist is None or macd_hist >= ZERO:
+            return False, "strategy_overlay_macd_not_negative", metrics
+        if atr14_bps is None or atr14_bps < Decimal("4"):
+            return False, "strategy_overlay_atr_too_low", metrics
+        if session_return_bps is None or session_return_bps >= ZERO:
+            return False, "strategy_overlay_session_not_negative", metrics
+        return True, "ok", metrics
+
     if overlay_mode == "mean_reversion_long_short":
         if signal_side is Side.BUY:
             if not _between(bb_pos, Decimal("-0.50"), Decimal("0.45")):
@@ -183,6 +236,44 @@ def evaluate_strategy_overlay(
             and opening_range_breakdown_bps > Decimal("5")
         ):
             return False, "strategy_overlay_short_breakdown_too_deep", metrics
+        return True, "ok", metrics
+
+    if overlay_mode == "session_twap_reclaim_long":
+        if signal_side is not Side.BUY:
+            return False, "strategy_overlay_long_only", metrics
+        if trend_label != "bullish":
+            return False, "strategy_overlay_trend_not_bullish", metrics
+        if session_twap_gap_bps is None or not _between(
+            session_twap_gap_bps,
+            Decimal("0.25"),
+            Decimal("12"),
+        ):
+            return False, "strategy_overlay_twap_gap_not_long_band", metrics
+        if macd_hist is None or macd_hist <= ZERO:
+            return False, "strategy_overlay_macd_not_positive", metrics
+        if atr14_bps is None or atr14_bps < Decimal("4"):
+            return False, "strategy_overlay_atr_too_low", metrics
+        if not _between(rsi14, Decimal("45"), Decimal("70")):
+            return False, "strategy_overlay_rsi_not_twap_long_band", metrics
+        return True, "ok", metrics
+
+    if overlay_mode == "session_twap_reject_short":
+        if signal_side is not Side.SELL:
+            return False, "strategy_overlay_short_only", metrics
+        if trend_label != "bearish":
+            return False, "strategy_overlay_trend_not_bearish", metrics
+        if session_twap_gap_bps is None or not _between(
+            session_twap_gap_bps,
+            Decimal("-12"),
+            Decimal("-0.25"),
+        ):
+            return False, "strategy_overlay_twap_gap_not_short_band", metrics
+        if macd_hist is None or macd_hist >= ZERO:
+            return False, "strategy_overlay_macd_not_negative", metrics
+        if atr14_bps is None or atr14_bps < Decimal("4"):
+            return False, "strategy_overlay_atr_too_low", metrics
+        if not _between(rsi14, Decimal("30"), Decimal("55")):
+            return False, "strategy_overlay_rsi_not_twap_short_band", metrics
         return True, "ok", metrics
 
     return True, "ok", metrics
@@ -240,6 +331,33 @@ def _compute_session_return_bps(current_session: Sequence[MinuteBar], last_close
     if session_open == ZERO:
         return None
     return ((last_close / session_open) - ONE) * TEN_THOUSAND
+
+
+def _compute_session_twap(current_session: Sequence[MinuteBar]) -> Decimal | None:
+    if not current_session:
+        return None
+    closes = [bar.close for bar in current_session if bar.close is not None]
+    if not closes:
+        return None
+    return sum(closes, start=ZERO) / Decimal(len(closes))
+
+
+def _compute_atr_bps(bars: Sequence[MinuteBar], *, period: int = 14) -> Decimal | None:
+    if len(bars) < period + 1:
+        return None
+    sample = list(bars[-(period + 1):])
+    true_ranges: list[Decimal] = []
+    prev_close = sample[0].close
+    for bar in sample[1:]:
+        high_low = bar.high - bar.low
+        high_prev_close = abs(bar.high - prev_close)
+        low_prev_close = abs(bar.low - prev_close)
+        true_ranges.append(max(high_low, high_prev_close, low_prev_close))
+        prev_close = bar.close
+    if not true_ranges or sample[-1].close == ZERO:
+        return None
+    atr = sum(true_ranges, start=ZERO) / Decimal(len(true_ranges))
+    return (atr / sample[-1].close) * TEN_THOUSAND
 
 
 def _compute_opening_range(current_session: Sequence[MinuteBar]) -> tuple[Decimal | None, Decimal | None, bool]:

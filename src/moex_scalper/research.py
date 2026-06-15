@@ -70,6 +70,14 @@ STRATEGY_IDEAS: list[dict[str, Any]] = [
         "overlay_mode": "trend_pullback_long",
     },
     {
+        "name": "trend_pullback_short",
+        "description": "Bearish pullback: отрицательный EMA gap + MACD + откат вверх внутри нисходящего тренда.",
+        "family": "trend_pullback",
+        "entry_modes": "short_only",
+        "allow_short": True,
+        "overlay_mode": "trend_pullback_short",
+    },
+    {
         "name": "stoch_trend_long",
         "description": "Trend continuation: стохастик в бычьей зоне с подтверждением EMA и MACD.",
         "family": "stoch_trend",
@@ -86,12 +94,36 @@ STRATEGY_IDEAS: list[dict[str, Any]] = [
         "overlay_mode": "opening_range_breakout_long",
     },
     {
+        "name": "opening_range_breakdown_short",
+        "description": "Opening-range breakdown вниз с подтверждением ATR, EMA и MACD.",
+        "family": "opening_range_breakdown",
+        "entry_modes": "short_only",
+        "allow_short": True,
+        "overlay_mode": "opening_range_breakdown_short",
+    },
+    {
         "name": "mean_reversion_long_short",
         "description": "Mean reversion от крайних Bollinger/RSI/Stoch состояний, long+short.",
         "family": "mean_reversion",
         "entry_modes": "long+short",
         "allow_short": True,
         "overlay_mode": "mean_reversion_long_short",
+    },
+    {
+        "name": "session_twap_reclaim_long",
+        "description": "Bullish TWAP reclaim: цена удерживается выше intraday TWAP при положительном MACD и достаточном ATR.",
+        "family": "session_twap",
+        "entry_modes": "long_only",
+        "allow_short": False,
+        "overlay_mode": "session_twap_reclaim_long",
+    },
+    {
+        "name": "session_twap_reject_short",
+        "description": "Bearish TWAP reject: цена остаётся ниже intraday TWAP при отрицательном MACD и достаточном ATR.",
+        "family": "session_twap",
+        "entry_modes": "short_only",
+        "allow_short": True,
+        "overlay_mode": "session_twap_reject_short",
     },
 ]
 
@@ -212,6 +244,9 @@ def build_indicator_research(
         macd_value = _series_last(minute["macd"])
         macd_signal_value = _series_last(minute["macd_signal"])
         macd_hist_value = _series_last(minute["macd_hist"])
+        session_twap = _series_last(minute["session_twap"])
+        session_twap_gap_bps = _series_last(minute["session_twap_gap_bps"])
+        atr14_bps = _series_last(minute["atr14_bps"])
 
         ticker_reports.append(
             {
@@ -233,6 +268,9 @@ def build_indicator_research(
                 "macd": _float_or_none(macd_value),
                 "macd_signal": _float_or_none(macd_signal_value),
                 "macd_hist": _float_or_none(macd_hist_value),
+                "session_twap": _float_or_none(session_twap),
+                "session_twap_gap_bps": _float_or_none(session_twap_gap_bps),
+                "atr14_bps": _float_or_none(atr14_bps),
                 "trend_label": classify_trend(
                     rsi14=rsi14,
                     ema_gap_bps=ema_gap_bps,
@@ -514,6 +552,26 @@ def build_minute_indicator_frame(
     minute["session_return_bps"] = (
         ((close / minute["session_open"]) - 1) * 10000
     ).where(minute["session_open"] != 0)
+    minute["session_twap"] = minute.groupby("session_date")["close"].transform(
+        lambda series: series.expanding().mean()
+    )
+    minute["session_twap_gap_bps"] = (
+        ((close / minute["session_twap"]) - 1) * 10000
+    ).where(minute["session_twap"] != 0)
+
+    prev_close = close.shift(1)
+    true_range = pd_module.concat(
+        [
+            minute["high"] - minute["low"],
+            (minute["high"] - prev_close).abs(),
+            (minute["low"] - prev_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    minute["atr14"] = true_range.rolling(window=14, min_periods=14).mean()
+    minute["atr14_bps"] = (
+        (minute["atr14"] / close) * 10000
+    ).where(close != 0)
 
     opening_window_mask = minute["session_bar_index"] < 5
     minute["opening_range_high"] = (
@@ -562,6 +620,9 @@ def enrich_snapshot_frame_with_regime(
         "stoch_k",
         "stoch_d",
         "session_return_bps",
+        "session_twap",
+        "session_twap_gap_bps",
+        "atr14_bps",
         "opening_range_high",
         "opening_range_low",
         "opening_range_breakout_bps",
@@ -701,7 +762,11 @@ def summarize_strategy_candidate(
         "family": candidate.get("family"),
         "overlay_mode": candidate.get("overlay_mode"),
         "allow_short": candidate_config.allow_short,
-        "entry_modes": "long+short" if candidate_config.allow_short else "long_only",
+        "entry_modes": (
+            str(candidate.get("entry_modes"))
+            if candidate.get("entry_modes")
+            else ("long+short" if candidate_config.allow_short else "long_only")
+        ),
         "regime_filter_mode": candidate_config.regime_filter_mode,
         "strategy_overlay_mode": candidate_config.strategy_overlay_mode,
         "is_baseline": is_baseline,
@@ -800,6 +865,21 @@ def evaluate_strategy_overlay(
             return False, "strategy_lab_bb_not_pullback_band"
         return True, None
 
+    if overlay_mode == "trend_pullback_short":
+        if signal_side is not Side.SELL:
+            return False, "strategy_lab_short_only"
+        if trend_label != "bearish":
+            return False, "strategy_lab_trend_not_bearish"
+        if ema_gap_bps is None or ema_gap_bps >= -0.5:
+            return False, "strategy_lab_ema_gap_not_negative_enough"
+        if macd_hist is None or macd_hist >= 0:
+            return False, "strategy_lab_macd_not_negative"
+        if not _between(rsi14, 35, 60):
+            return False, "strategy_lab_rsi_not_short_pullback_band"
+        if not _between(bb_pos, 0.35, 0.90):
+            return False, "strategy_lab_bb_not_short_pullback_band"
+        return True, None
+
     if overlay_mode == "stoch_trend_long":
         if signal_side is not Side.BUY:
             return False, "strategy_lab_long_only"
@@ -828,6 +908,24 @@ def evaluate_strategy_overlay(
             return False, "strategy_lab_session_not_positive"
         return True, None
 
+    if overlay_mode == "opening_range_breakdown_short":
+        atr14_bps = _coerce_float(indicator_state.get("atr14_bps"))
+        if signal_side is not Side.SELL:
+            return False, "strategy_lab_short_only"
+        if not opening_range_ready:
+            return False, "strategy_lab_opening_range_warmup"
+        if opening_range_breakdown_bps is None or opening_range_breakdown_bps >= -1.0:
+            return False, "strategy_lab_no_breakdown"
+        if ema_gap_bps is None or ema_gap_bps >= 0:
+            return False, "strategy_lab_ema_gap_not_negative"
+        if macd_hist is None or macd_hist >= 0:
+            return False, "strategy_lab_macd_not_negative"
+        if atr14_bps is None or atr14_bps < 4.0:
+            return False, "strategy_lab_atr_too_low"
+        if session_return_bps is None or session_return_bps >= 0:
+            return False, "strategy_lab_session_not_negative"
+        return True, None
+
     if overlay_mode == "mean_reversion_long_short":
         if signal_side is Side.BUY:
             if not _between(bb_pos, -0.50, 0.45):
@@ -845,6 +943,40 @@ def evaluate_strategy_overlay(
             return False, "strategy_lab_short_stoch_not_premium"
         if opening_range_ready and opening_range_breakdown_bps is not None and opening_range_breakdown_bps > 5:
             return False, "strategy_lab_short_breakdown_too_deep"
+        return True, None
+
+    if overlay_mode == "session_twap_reclaim_long":
+        session_twap_gap_bps = _coerce_float(indicator_state.get("session_twap_gap_bps"))
+        atr14_bps = _coerce_float(indicator_state.get("atr14_bps"))
+        if signal_side is not Side.BUY:
+            return False, "strategy_lab_long_only"
+        if trend_label != "bullish":
+            return False, "strategy_lab_trend_not_bullish"
+        if session_twap_gap_bps is None or not _between(session_twap_gap_bps, 0.25, 12.0):
+            return False, "strategy_lab_twap_gap_not_long_band"
+        if macd_hist is None or macd_hist <= 0:
+            return False, "strategy_lab_macd_not_positive"
+        if atr14_bps is None or atr14_bps < 4.0:
+            return False, "strategy_lab_atr_too_low"
+        if not _between(rsi14, 45, 70):
+            return False, "strategy_lab_rsi_not_twap_long_band"
+        return True, None
+
+    if overlay_mode == "session_twap_reject_short":
+        session_twap_gap_bps = _coerce_float(indicator_state.get("session_twap_gap_bps"))
+        atr14_bps = _coerce_float(indicator_state.get("atr14_bps"))
+        if signal_side is not Side.SELL:
+            return False, "strategy_lab_short_only"
+        if trend_label != "bearish":
+            return False, "strategy_lab_trend_not_bearish"
+        if session_twap_gap_bps is None or not _between(session_twap_gap_bps, -12.0, -0.25):
+            return False, "strategy_lab_twap_gap_not_short_band"
+        if macd_hist is None or macd_hist >= 0:
+            return False, "strategy_lab_macd_not_negative"
+        if atr14_bps is None or atr14_bps < 4.0:
+            return False, "strategy_lab_atr_too_low"
+        if not _between(rsi14, 30, 55):
+            return False, "strategy_lab_rsi_not_twap_short_band"
         return True, None
 
     return True, None
