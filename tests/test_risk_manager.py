@@ -10,7 +10,12 @@ from moex_scalper.domain import ClosedTrade, InstrumentSpec, MarketSnapshot, Sid
 from moex_scalper.risk import RiskManager, trading_day_key
 
 
-def build_config(*, mode: str = "paper", paper_guard_cooldown_seconds: float = 1800.0) -> ScalperConfig:
+def build_config(
+    *,
+    mode: str = "paper",
+    paper_guard_cooldown_seconds: float = 1800.0,
+    paper_continue_after_daily_loss_limit: bool = True,
+) -> ScalperConfig:
     return ScalperConfig(
         token="token",
         account_id="",
@@ -26,6 +31,7 @@ def build_config(*, mode: str = "paper", paper_guard_cooldown_seconds: float = 1
         intraday_ticker_max_consecutive_losses=4,
         intraday_ticker_max_consecutive_time_stop_losses=2,
         paper_ticker_guard_cooldown_seconds=paper_guard_cooldown_seconds,
+        paper_continue_after_daily_loss_limit=paper_continue_after_daily_loss_limit,
         intraday_session_max_guarded_tickers=0,
         cooldown_seconds=12.0,
         time_stop_seconds=8.0,
@@ -64,16 +70,21 @@ def build_config(*, mode: str = "paper", paper_guard_cooldown_seconds: float = 1
     )
 
 
-def build_instrument() -> InstrumentSpec:
+def build_instrument(
+    *,
+    ticker: str = "SBER",
+    instrument_id: str = "instrument-sber",
+    name: str = "Sberbank",
+) -> InstrumentSpec:
     return InstrumentSpec(
-        instrument_id="instrument-sber",
-        ticker="SBER",
+        instrument_id=instrument_id,
+        ticker=ticker,
         class_code="TQBR",
         figi="FIGI",
         lot_size=10,
         min_price_increment=Decimal("0.01"),
         currency="RUB",
-        name="Sberbank",
+        name=name,
     )
 
 
@@ -107,6 +118,29 @@ def build_snapshot(instrument: InstrumentSpec, at: datetime) -> MarketSnapshot:
 
 
 class RiskManagerPaperGuardTests(unittest.TestCase):
+    def test_paper_mode_continues_collecting_after_daily_loss_limit(self) -> None:
+        config = build_config(mode="paper", paper_continue_after_daily_loss_limit=True)
+        risk = RiskManager(config)
+        instrument = build_instrument()
+        second_instrument = build_instrument(
+            ticker="GAZP",
+            instrument_id="instrument-gazp",
+            name="Gazprom",
+        )
+        closed_at = datetime(2026, 6, 15, 11, 0, tzinfo=timezone.utc)
+
+        risk.note_closed_trade(build_trade(instrument, closed_at, pnl="-2600"))
+
+        allowed, reason = risk.can_open(
+            build_snapshot(second_instrument, closed_at + timedelta(minutes=1)),
+            open_positions=0,
+            planned_notional_rub=Decimal("1000"),
+        )
+        self.assertTrue(risk.daily_loss_limit_hit())
+        self.assertFalse(risk.daily_loss_limit_enforced())
+        self.assertTrue(allowed)
+        self.assertEqual(reason, "ok")
+
     def test_paper_ticker_guard_rearms_after_cooldown(self) -> None:
         config = build_config(mode="paper", paper_guard_cooldown_seconds=1800.0)
         risk = RiskManager(config)
@@ -178,7 +212,11 @@ class RiskManagerPaperGuardTests(unittest.TestCase):
         self.assertEqual(reason, "ok")
 
     def test_live_mode_keeps_ticker_guard_for_entire_day(self) -> None:
-        config = build_config(mode="live", paper_guard_cooldown_seconds=1800.0)
+        config = build_config(
+            mode="live",
+            paper_guard_cooldown_seconds=1800.0,
+            paper_continue_after_daily_loss_limit=False,
+        )
         risk = RiskManager(config)
         instrument = build_instrument()
         first_close = datetime(2026, 6, 15, 10, 20, tzinfo=timezone.utc)
@@ -195,6 +233,32 @@ class RiskManagerPaperGuardTests(unittest.TestCase):
         )
         self.assertFalse(allowed)
         self.assertEqual(reason, "ticker_consecutive_time_stop_losses_limit")
+
+    def test_live_mode_enforces_daily_loss_limit(self) -> None:
+        config = build_config(
+            mode="live",
+            paper_continue_after_daily_loss_limit=False,
+        )
+        risk = RiskManager(config)
+        instrument = build_instrument()
+        second_instrument = build_instrument(
+            ticker="GAZP",
+            instrument_id="instrument-gazp",
+            name="Gazprom",
+        )
+        closed_at = datetime(2026, 6, 15, 11, 0, tzinfo=timezone.utc)
+
+        risk.note_closed_trade(build_trade(instrument, closed_at, pnl="-2600"))
+
+        allowed, reason = risk.can_open(
+            build_snapshot(second_instrument, closed_at + timedelta(minutes=1)),
+            open_positions=0,
+            planned_notional_rub=Decimal("1000"),
+        )
+        self.assertTrue(risk.daily_loss_limit_hit())
+        self.assertTrue(risk.daily_loss_limit_enforced())
+        self.assertFalse(allowed)
+        self.assertEqual(reason, "daily_loss_limit")
 
 
 if __name__ == "__main__":

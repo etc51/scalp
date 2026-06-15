@@ -146,6 +146,8 @@ def build_focus(payload: dict[str, Any]) -> list[str]:
     active_restrictions = payload.get("active_restrictions") or {}
     active_guards = list(risk_controls.get("active_ticker_guards") or [])
     active_session_guards = list(risk_controls.get("active_session_guards") or [])
+    daily_loss_limit_hit = bool(risk_controls.get("daily_loss_limit_hit"))
+    daily_loss_limit_enforced = bool(risk_controls.get("daily_loss_limit_enforced", True))
 
     if watchdog.get("status") not in {None, "healthy"}:
         focus.append(f"Watchdog status: {watchdog.get('status')}.")
@@ -192,6 +194,10 @@ def build_focus(payload: dict[str, Any]) -> list[str]:
             )
     if int(today.get("trade_count", 0) or 0) <= 0:
         focus.append("Сегодня нет закрытых paper-сделок.")
+    if daily_loss_limit_hit and not daily_loss_limit_enforced:
+        focus.append(
+            "Paper-контур уже ниже дневного loss-limit, но продолжает собирать сделки для статистики и ночного анализа."
+        )
     if active_guards:
         guard_summary = ", ".join(
             f"{item.get('ticker')}({','.join(str(reason_name) for reason_name in list(item.get('reasons') or []))})"
@@ -257,6 +263,8 @@ def build_headline(payload: dict[str, Any]) -> str:
     strategy_diagnostics = payload.get("strategy_diagnostics") or {}
     risk_controls = payload.get("risk_controls") or {}
     active_guards = list(risk_controls.get("active_ticker_guards") or [])
+    daily_loss_limit_hit = bool(risk_controls.get("daily_loss_limit_hit"))
+    daily_loss_limit_enforced = bool(risk_controls.get("daily_loss_limit_enforced", True))
 
     if watchdog.get("status") not in {None, "healthy"}:
         return f"Watchdog status {watchdog.get('status')}: контур требует внимания."
@@ -282,6 +290,8 @@ def build_headline(payload: dict[str, Any]) -> str:
         )
     if optimizer.get("status") == "no_entry_window_data" and research.get("status") == "no_entry_window_data":
         return "В market-history пока нет валидного in-window sample для optimizer/research."
+    if daily_loss_limit_hit and not daily_loss_limit_enforced:
+        return "Paper-контур пробил дневной loss-limit, но продолжает торговлю для накопления статистики."
     if int(today.get("trade_count", 0) or 0) <= 0:
         return "Сегодня закрытых paper-сделок нет; продолжаем сбор сигнала и market-data."
     if active_guards:

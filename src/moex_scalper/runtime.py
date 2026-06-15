@@ -107,11 +107,12 @@ class ScalperRuntime:
             ",".join(self.active_restrictions.blocked_ticker_hours) or "none",
         )
         LOGGER.info(
-            "Intraday guard ticker_loss_limit=%s consecutive_losses=%s consecutive_time_stop_losses=%s paper_ticker_guard_cooldown_seconds=%s session_max_guarded_tickers=%s",
+            "Intraday guard ticker_loss_limit=%s consecutive_losses=%s consecutive_time_stop_losses=%s paper_ticker_guard_cooldown_seconds=%s paper_continue_after_daily_loss_limit=%s session_max_guarded_tickers=%s",
             self.config.intraday_ticker_loss_limit_rub,
             self.config.intraday_ticker_max_consecutive_losses,
             self.config.intraday_ticker_max_consecutive_time_stop_losses,
             self.config.paper_ticker_guard_cooldown_seconds,
+            self.config.paper_continue_after_daily_loss_limit,
             self.config.intraday_session_max_guarded_tickers,
         )
 
@@ -500,6 +501,11 @@ class ScalperRuntime:
             "risk_controls": {
                 "current_day": self.risk.current_day,
                 "daily_loss_limit_rub": str(self.config.daily_loss_limit_rub),
+                "daily_loss_limit_hit": self.risk.daily_loss_limit_hit(),
+                "daily_loss_limit_enforced": self.risk.daily_loss_limit_enforced(),
+                "paper_continue_after_daily_loss_limit": (
+                    self.config.paper_continue_after_daily_loss_limit
+                ),
                 "intraday_ticker_loss_limit_rub": str(
                     self.config.intraday_ticker_loss_limit_rub
                 ),

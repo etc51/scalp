@@ -19,6 +19,11 @@ def build_paper_risk_profile(config: ScalperConfig) -> dict[str, str]:
         if config.mode == "paper" and config.paper_ticker_guard_cooldown_seconds > 0
         else "Ticker guards stay active for the full trading day"
     )
+    daily_loss_policy = (
+        "Keep paper collecting new entries after the daily loss threshold"
+        if config.mode == "paper" and config.paper_continue_after_daily_loss_limit
+        else "Stop new entries after the daily loss threshold"
+    )
     if leverage <= Decimal("1.2"):
         return {
             "stage": "Conservative validation",
@@ -28,6 +33,7 @@ def build_paper_risk_profile(config: ScalperConfig) -> dict[str, str]:
             "promotion_rule": "Move to 1.5x only after 100+ closed paper trades, profit factor >= 1.15, positive expectancy, and no repeated daily loss-limit breaches",
             "rollback_rule": "Drop back to 1.0x if the recent sample turns negative or daily loss-limit triggers start repeating",
             "ticker_guard_policy": guard_policy,
+            "daily_loss_policy": daily_loss_policy,
         }
     if leverage <= Decimal("1.5"):
         return {
@@ -38,6 +44,7 @@ def build_paper_risk_profile(config: ScalperConfig) -> dict[str, str]:
             "promotion_rule": "Hold here only while profit factor and expectancy stay positive through new samples",
             "rollback_rule": "Drop back to 1.2x if drawdown or daily loss-limit pressure increases",
             "ticker_guard_policy": guard_policy,
+            "daily_loss_policy": daily_loss_policy,
         }
     return {
         "stage": "Aggressive for paper scalping",
@@ -47,6 +54,7 @@ def build_paper_risk_profile(config: ScalperConfig) -> dict[str, str]:
         "promotion_rule": "Do not raise leverage further without a clear statistical edge",
         "rollback_rule": "Reduce leverage if stability is not already proven",
         "ticker_guard_policy": guard_policy,
+        "daily_loss_policy": daily_loss_policy,
     }
 
 
@@ -106,6 +114,7 @@ def build_strategy_diagnostics(config: ScalperConfig) -> dict[str, Any]:
         "regime_filter_mode": config.regime_filter_mode,
         "strategy_overlay_mode": config.strategy_overlay_mode,
         "paper_ticker_guard_cooldown_seconds": config.paper_ticker_guard_cooldown_seconds,
+        "paper_continue_after_daily_loss_limit": config.paper_continue_after_daily_loss_limit,
         "premium_roundtrip_commission_bps": str(roundtrip_commission_bps),
         "configured_take_profit_bps": str(config.take_profit_bps),
         "configured_net_take_profit_bps": str(net_take_profit_bps),

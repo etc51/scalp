@@ -62,7 +62,7 @@ class RiskManager:
 
         if open_positions >= self.config.max_open_positions:
             return False, "max_open_positions"
-        if self.realized_pnl_rub <= -self.config.daily_loss_limit_rub:
+        if self.daily_loss_limit_enforced() and self.daily_loss_limit_hit():
             return False, "daily_loss_limit"
         session_guard_reason = self.session_guard_reason(now=snapshot.at)
         if session_guard_reason is not None:
@@ -178,6 +178,15 @@ class RiskManager:
                 "max_guarded_tickers": self.config.intraday_session_max_guarded_tickers,
             }
         ]
+
+    def daily_loss_limit_hit(self) -> bool:
+        return self.realized_pnl_rub <= -self.config.daily_loss_limit_rub
+
+    def daily_loss_limit_enforced(self) -> bool:
+        return not (
+            self.config.mode == "paper"
+            and self.config.paper_continue_after_daily_loss_limit
+        )
 
     def _rebuild_ticker_state(self, trades: list[ClosedTrade]) -> None:
         self.ticker_realized_pnl_rub.clear()

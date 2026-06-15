@@ -38,6 +38,7 @@ TRACKED_STRATEGY_PROFILE_KEYS = frozenset(
         "SCALPER_INTRADAY_TICKER_MAX_CONSECUTIVE_LOSSES",
         "SCALPER_INTRADAY_TICKER_MAX_CONSECUTIVE_TIME_STOP_LOSSES",
         "SCALPER_PAPER_TICKER_GUARD_COOLDOWN_SECONDS",
+        "SCALPER_PAPER_CONTINUE_AFTER_DAILY_LOSS_LIMIT",
         "SCALPER_INTRADAY_SESSION_MAX_GUARDED_TICKERS",
         "SCALPER_MAX_OPEN_POSITIONS",
         "SCALPER_MAX_POSITION_NOTIONAL_RUB",
@@ -208,6 +209,7 @@ class ScalperConfig:
     intraday_ticker_max_consecutive_losses: int
     intraday_ticker_max_consecutive_time_stop_losses: int
     paper_ticker_guard_cooldown_seconds: float
+    paper_continue_after_daily_loss_limit: bool
     intraday_session_max_guarded_tickers: int
     cooldown_seconds: float
     time_stop_seconds: float
@@ -312,6 +314,13 @@ def load_config(args: argparse.Namespace, *, require_auth: bool = True) -> Scalp
                     "2700" if args.mode == "paper" else "0",
                 )
             ),
+        ),
+        paper_continue_after_daily_loss_limit=parse_bool(
+            os.getenv(
+                "SCALPER_PAPER_CONTINUE_AFTER_DAILY_LOSS_LIMIT",
+                "1" if args.mode == "paper" else "0",
+            ),
+            default=args.mode == "paper",
         ),
         intraday_session_max_guarded_tickers=(
             0
