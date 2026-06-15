@@ -74,7 +74,7 @@ class ModerateScalpingStrategy:
         if adaptive_enabled:
             adaptive_spread_bps = max(self._config.max_spread_bps, Decimal("1.5")) + Decimal("1.5")
             adaptive_min_imbalance = max(Decimal("0.40"), self._config.min_imbalance - Decimal("0.10"))
-            adaptive_min_impulse_bps = max(Decimal("0.20"), self._config.min_impulse_bps * Decimal("0.5"))
+            adaptive_min_impulse_bps = max(Decimal("0.75"), self._config.min_impulse_bps)
             adaptive_take_profit_bps = max(
                 self._commission_model.roundtrip_bps + self._config.min_net_take_profit_bps + Decimal("1"),
                 self._config.take_profit_bps - Decimal("2"),
@@ -188,6 +188,16 @@ class ModerateScalpingStrategy:
         metrics["net_take_profit_bps"] = net_take_profit_bps
         if net_take_profit_bps < self._config.min_net_take_profit_bps:
             return None, "net_take_profit_too_low", metrics
+        if entry_profile == "adaptive":
+            net_take_profit_after_costs_bps = net_take_profit_bps - snapshot.spread_bps
+            adaptive_cost_headroom_floor_bps = max(
+                Decimal("2"),
+                self._config.target_net_take_profit_buffer_bps,
+            )
+            metrics["net_take_profit_after_costs_bps"] = net_take_profit_after_costs_bps
+            metrics["adaptive_cost_headroom_floor_bps"] = adaptive_cost_headroom_floor_bps
+            if net_take_profit_after_costs_bps < adaptive_cost_headroom_floor_bps:
+                return None, "adaptive_cost_headroom_too_low", metrics
 
         regime_allowed, regime_reason, regime_metrics = self._check_regime_filter(
             state,
@@ -210,6 +220,8 @@ class ModerateScalpingStrategy:
             f"profile={entry_profile} side={signal_side.value} impulse_bps={impulse_bps:.2f} spread_bps={snapshot.spread_bps:.2f} "
             f"imbalance={snapshot.imbalance:.3f} net_tp_bps={net_take_profit_bps:.2f}"
         )
+        if entry_profile == "adaptive":
+            reason += f" net_tp_after_costs_bps={net_take_profit_after_costs_bps:.2f}"
         return EntrySignal(
             side=signal_side,
             expected_edge_bps=expected_edge_bps,
