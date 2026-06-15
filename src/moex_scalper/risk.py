@@ -282,8 +282,9 @@ class RiskManager:
             if not self._ticker_guard_reasons(ticker):
                 self.ticker_guard_cooldown_until.pop(ticker, None)
                 continue
-            self.ticker_guard_cooldown_until.setdefault(
-                ticker,
-                last_closed_at + timedelta(seconds=self.config.paper_ticker_guard_cooldown_seconds),
+            # Recompute restored paper guard deadlines from the current config,
+            # so shorter cooldown tweaks take effect immediately after restart.
+            self.ticker_guard_cooldown_until[ticker] = last_closed_at + timedelta(
+                seconds=self.config.paper_ticker_guard_cooldown_seconds
             )
         self._release_expired_ticker_guards(now)

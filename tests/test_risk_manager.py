@@ -211,6 +211,39 @@ class RiskManagerPaperGuardTests(unittest.TestCase):
         self.assertTrue(allowed)
         self.assertEqual(reason, "ok")
 
+    def test_restore_state_recomputes_existing_guard_using_current_cooldown(self) -> None:
+        config = build_config(mode="paper", paper_guard_cooldown_seconds=900.0)
+        risk = RiskManager(config)
+        instrument = build_instrument()
+        first_close = datetime(2026, 6, 15, 10, 20, tzinfo=timezone.utc)
+        second_close = first_close + timedelta(minutes=5)
+        trades = [
+            build_trade(instrument, first_close),
+            build_trade(instrument, second_close),
+        ]
+
+        risk.restore_state(
+            realized_pnl_rub=Decimal("-60"),
+            current_day=trading_day_key(second_close, config.timezone),
+            cooldown_until={},
+            ticker_guard_cooldown_until={
+                "SBER": second_close + timedelta(minutes=45),
+            },
+            trades_today=trades,
+            now=second_close + timedelta(minutes=20),
+        )
+
+        reopened_snapshot = build_snapshot(instrument, second_close + timedelta(minutes=20))
+        allowed, reason = risk.can_open(
+            reopened_snapshot,
+            open_positions=0,
+            planned_notional_rub=Decimal("1000"),
+        )
+        self.assertTrue(allowed)
+        self.assertEqual(reason, "ok")
+        self.assertEqual(risk.active_ticker_guards(now=reopened_snapshot.at), [])
+        self.assertNotIn("SBER", risk.ticker_guard_cooldown_until)
+
     def test_live_mode_keeps_ticker_guard_for_entire_day(self) -> None:
         config = build_config(
             mode="live",
