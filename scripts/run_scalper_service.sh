@@ -15,24 +15,6 @@ if [[ ! -x .venv/bin/python3 ]]; then
   exit 1
 fi
 
-while IFS= read -r RAW_LINE || [[ -n "$RAW_LINE" ]]; do
-  LINE="${RAW_LINE%$'\r'}"
-  if [[ -z "$LINE" || "$LINE" == \#* || "$LINE" != *=* ]]; then
-    continue
-  fi
-
-  KEY="${LINE%%=*}"
-  VALUE="${LINE#*=}"
-
-  if [[ "$VALUE" == \"*\" && "$VALUE" == *\" ]]; then
-    VALUE="${VALUE:1:-1}"
-  elif [[ "$VALUE" == \'*\' && "$VALUE" == *\' ]]; then
-    VALUE="${VALUE:1:-1}"
-  fi
-
-  export "$KEY=$VALUE"
-done < .env
-
 if [[ -z "${GRPC_DEFAULT_SSL_ROOTS_FILE_PATH:-}" ]]; then
   CERT_PATH="$(
     .venv/bin/python3 - <<'PY'
@@ -55,11 +37,6 @@ fi
 
 mkdir -p runtime reports
 
-MODE="${SCALPER_MODE:-paper}"
-WATCHLIST="${SCALPER_WATCHLIST:-SBER,GAZP,LKOH,VTBR}"
-RUN_SECONDS="${SCALPER_RUN_DURATION_SECONDS:-0}"
-
-exec .venv/bin/python3 -m moex_scalper run \
-  --mode "$MODE" \
-  --watchlist "$WATCHLIST" \
-  --run-seconds "$RUN_SECONDS"
+# Let the Python app load .env plus tracked GitHub profiles itself so that
+# repo-controlled paper profiles can safely override local machine settings.
+exec .venv/bin/python3 -m moex_scalper run
